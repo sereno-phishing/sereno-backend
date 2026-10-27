@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 
-from .auth.domain import DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
+from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
 
 
 COOKIE_NAME = "sereno_session"
@@ -11,7 +11,13 @@ def auth_routes(service):
 
     def authenticate(action, status):
         try:
-            user, token = action(request.get_json(silent=True))
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                raise InvalidCredentials
+            username, password = payload.get("username"), payload.get("password")
+            if not isinstance(username, str) or not isinstance(password, str):
+                raise InvalidCredentials
+            user, token = action(Credentials(username, password))
         except InvalidCredentials:
             return jsonify(error="invalid"), 400 if status == 201 else 401
         response = jsonify(user=user, token=token)

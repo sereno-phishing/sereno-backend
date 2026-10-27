@@ -37,7 +37,14 @@ For browser development, terminate trusted local HTTPS in front of this localhos
 
 ## Architecture and storage limits
 
-Persistence is the varying concern; the HTTP contract and application rules must remain stable. `app/http.py` calls `AuthService`, which depends on the `AuthRepository` Protocol. Domain/application code imports no Flask, Werkzeug, filesystem, or SQL. The composition root `app/__init__.py` alone selects the JSON implementation and injects Werkzeug's default password hash/verification functions. This small port/adapter boundary costs a few files but isolates the real storage change without a generic repository framework.
+Callers/transports and persistence can vary; authentication rules and the HTTP contract must remain stable. This small hexagonal boundary isolates those two changes without a generic repository framework:
+
+- `app/http.py` checks JSON structure and field types, then constructs immutable `Credentials`. It never passes request dictionaries into use cases.
+- `Credentials` enforces nonempty, UTF-8-encodable strings and trims usernames while preserving passwords. These invariants apply to non-HTTP callers too. `AuthService.register(credentials)` and `login(credentials)` consume this typed input; existing response dictionaries remain unchanged.
+- `AuthService` depends on the structural `AuthRepository` Protocol and injected hash, verification, clock, and token functions. Domain/application code imports no Flask, Werkzeug, filesystem, SQL, or persistence adapters.
+- The composition root `app/__init__.py` selects JSON and injects Werkzeug's default hash/verification functions. `MemoryAuthRepository` is an independent, process-local test implementation, not a selectable runtime driver; `STORAGE_DRIVER=memory` remains unsupported.
+
+The repository contract assumes valid domain records. Registration atomically creates a user and that user's initial session, returning `False` without changes for duplicate usernames. Missing lookups return `None`; revocation is idempotent and affects only the given token. Invalid session references raise `StorageError` without changes. Records are independent snapshots on input/output. Multiple sessions are supported; writing an existing token replaces its session, so the caller must supply unique tokens. Atomicity is process-local, not a distributed transaction guarantee.
 
 `JsonAuthRepository` validates the complete schema, serializes operations using a process-wide lock per resolved file, and writes through a temporary sibling plus `os.replace`. Registration creates the user and initial session atomically. This does not coordinate multiple processes, external writers, network filesystems, or multiple hosts. The file contains password hashes and bearer session tokens: restrict local filesystem access and do not commit or share it.
 
@@ -49,8 +56,9 @@ This is not production-hardened: session expiry, CSRF protection, rate limiting,
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q
+.venv/Scripts/python.exe -m pytest -q tests/test_repository_contract.py tests/test_service.py
 .venv/Scripts/python.exe -m compileall -q app
 .venv/Scripts/python.exe -m pytest -q tests/test_auth.py -k smoke
 ```
 
-Tests use isolated temporary files and Flask's test client, including application recreation and logout revocation. They are not browser integration tests.
+`tests/test_repository_contract.py` runs the same parametrized behavior suite against JSON and memory, including concurrent duplicate registration, reference integrity, and snapshot isolation. `tests/test_service.py` uses memory plus deterministic hash/verification/clock/token fakes, without Flask clients or real JSON storage. HTTP, corruption preservation, atomic replacement, application recreation, and error regressions remain in `tests/test_auth.py` using isolated temporary files and Flask's test client. These are not browser integration tests.

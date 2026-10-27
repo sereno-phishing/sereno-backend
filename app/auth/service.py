@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from secrets import token_urlsafe
 from typing import Callable
 
-from .domain import DuplicateUser, InvalidCredentials, PasswordVerificationError, Session, User
+from .domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, Session, User
 from .repository import AuthRepository
 
 
@@ -19,32 +19,16 @@ class AuthService:
         self.clock = clock
         self.token_factory = token_factory
 
-    @staticmethod
-    def credentials(payload):
-        if not isinstance(payload, dict):
-            raise InvalidCredentials
-        username, password = payload.get("username"), payload.get("password")
-        if not isinstance(username, str) or not isinstance(password, str):
-            raise InvalidCredentials
-        if not username.strip() or not password:
-            raise InvalidCredentials
-        try:
-            username.encode("utf-8")
-            password.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise InvalidCredentials from error
-        return username.strip(), password
-
-    def register(self, payload):
-        username, password = self.credentials(payload)
+    def register(self, credentials: Credentials):
+        username, password = credentials.username, credentials.password
         user = User(username, self.hash_password(password), "usuario", self.clock())
         session = Session(username, self.clock(), self.token_factory())
         if not self.repository.register(user, session):
             raise DuplicateUser
         return user.public(), session.token
 
-    def login(self, payload):
-        username, password = self.credentials(payload)
+    def login(self, credentials: Credentials):
+        username, password = credentials.username, credentials.password
         user = self.repository.get_user(username)
         if user is None:
             raise InvalidCredentials

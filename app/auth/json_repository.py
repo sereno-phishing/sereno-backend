@@ -94,6 +94,8 @@ class JsonAuthRepository:
             data = self._read()
             if user.username in data["users"]:
                 return False
+            if session.username != user.username:
+                raise StorageError("Initial session must belong to registered user")
             data["users"][user.username] = asdict(user)
             data["sessions"][session.token] = asdict(session)
             self._write(data)

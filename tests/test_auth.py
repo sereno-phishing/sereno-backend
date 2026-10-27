@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app import create_app
-from app.auth.domain import StorageError
+from app.auth.domain import Credentials, StorageError
 from app.auth.json_repository import JsonAuthRepository
 from app.auth.service import AuthService
 
@@ -151,11 +151,11 @@ def test_repository_contract_and_injected_hashing(tmp_path):
     service = AuthService(repo, lambda value: "hashed:" + value,
                           lambda hashed, value: hashed == "hashed:" + value,
                           clock=lambda: "2026-10-27T12:30", token_factory=lambda: "token")
-    user, token = service.register({"username": "alice", "password": "secret"})
+    user, token = service.register(Credentials("alice", "secret"))
     assert user == {"username": "alice", "role": "usuario", "createdAt": "2026-10-27T12:30"}
     assert repo.get_user("alice").password_hash == "hashed:secret"
     assert repo.get_session(token).username == "alice"
-    assert service.login({"username": "alice", "password": "secret"})[0] == user
+    assert service.login(Credentials("alice", "secret"))[0] == user
     repo.delete_session(token)
     assert repo.get_session(token) is None
     assert repo.get_user("missing") is None
@@ -188,7 +188,7 @@ def test_failed_atomic_replace_keeps_original(tmp_path, monkeypatch):
     monkeypatch.setattr(adapter.os, "replace", fail)
     service = AuthService(repo, lambda value: "hash", lambda hashed, value: True)
     with pytest.raises(StorageError):
-        service.register({"username": "alice", "password": "secret"})
+        service.register(Credentials("alice", "secret"))
     assert path.read_bytes() == before
     assert list(tmp_path.iterdir()) == [path]
 
@@ -249,6 +249,6 @@ def test_arbitrary_verifier_errors_are_not_hidden(tmp_path):
 
     service = AuthService(JsonAuthRepository(tmp_path / "db.json"),
                           lambda value: "hash", broken_verifier)
-    service.register({"username": "alice", "password": "secret"})
+    service.register(Credentials("alice", "secret"))
     with pytest.raises(RuntimeError, match="unexpected verifier failure"):
-        service.login({"username": "alice", "password": "secret"})
+        service.login(Credentials("alice", "secret"))
