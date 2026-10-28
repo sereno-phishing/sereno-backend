@@ -4,15 +4,20 @@ Local Flask authentication and SUS survey submission with anonymous response rec
 
 ## Run locally (PowerShell, Python 3.12)
 
-From `sereno-backend/`:
+From `sereno-backend/`, start the backend with the existing virtual environment:
+
+```powershell
+.\start.ps1
+```
+
+The launcher uses this folder's `.venv`, temporarily enables `AUTH_LOCAL_HTTP=1`, and binds to `127.0.0.1:5000` without the debugger or reloader. It works from any caller directory when invoked by its path, restores the caller's directory and local HTTP setting afterward, and preserves any existing `STORAGE_DRIVER` and `DATA_FILE` settings.
+
+First-time setup only (Python 3.12):
 
 ```powershell
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
-$env:STORAGE_DRIVER = "json"
-$env:DATA_FILE = "data/db.json"
-$env:AUTH_LOCAL_HTTP = "1"
-.venv/Scripts/python.exe -m flask --app app:create_app run --host 127.0.0.1 --port 5000 --no-debugger --no-reload
+.\start.ps1
 ```
 
 Use one process only. Debug mode is off by default; do not enable it or expose this development server publicly. Load the sibling `sereno-extension` unpacked, reload it, and register a throwaway account in its popup. Demo credentials are not backend accounts. Keep the address exactly `http://127.0.0.1:5000`.
