@@ -43,7 +43,8 @@ class JsonAuthRepository:
                 raise ValueError("Invalid user")
             if not all(isinstance(value, str) and value for value in record.values()):
                 raise ValueError("Invalid user fields")
-            if key != record["username"] or key != key.strip() or record["role"] != "usuario":
+            if (key != record["username"] or key != key.strip()
+                    or record["role"] not in {"usuario", "administrador"}):
                 raise ValueError("Invalid user identity")
             datetime.strptime(record["createdAt"], "%Y-%m-%dT%H:%M")
         for key, record in sessions.items():

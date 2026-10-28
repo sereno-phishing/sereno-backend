@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
+from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
 from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
 
 
@@ -77,6 +78,57 @@ def auth_routes(service):
 
     @routes.errorhandler(StorageError)
     @routes.errorhandler(PasswordVerificationError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def policy_routes(auth_service, policy_service):
+    routes = Blueprint("policy", __name__, url_prefix="/v1")
+    routes.before_request(guard_local_http)
+
+    def authorize():
+        session = auth_service.session(request.cookies.get(COOKIE_NAME))
+        if session is None:
+            return None, (jsonify(error="invalid"), 401)
+        if session["role"] != "administrador":
+            return None, (jsonify(error="forbidden"), 403)
+        return session, None
+
+    @routes.get("/domains")
+    def list_domains():
+        _, denied = authorize()
+        if denied:
+            return denied
+        return jsonify(domains=policy_service.list())
+
+    @routes.put("/domains")
+    def replace_domains():
+        _, denied = authorize()
+        if denied:
+            return denied
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"domains"}:
+            return jsonify(error="invalid"), 400
+        records = payload["domains"]
+        if not isinstance(records, list):
+            return jsonify(error="invalid"), 400
+        try:
+            rows = []
+            for record in records:
+                if (not isinstance(record, dict)
+                        or set(record) != {"domain", "policy", "updatedAt"}):
+                    raise InvalidPolicy
+                rows.append(PolicyRow.create(
+                    record["domain"], record["policy"], record["updatedAt"]))
+            domains = policy_service.replace(tuple(rows))
+        except InvalidPolicy:
+            return jsonify(error="invalid"), 400
+        return jsonify(domains=domains)
+
+    @routes.errorhandler(StorageError)
+    @routes.errorhandler(PolicyStorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 

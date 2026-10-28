@@ -1,6 +1,7 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -26,8 +27,9 @@ def register(client, username="alice", password="secret", **extra):
     })
 
 
-def test_register_exact_public_contract(client, settings):
-    response = register(client, username=" alice ", role="admin")
+@pytest.mark.parametrize("requested_role", ["admin", "administrador", "unknown"])
+def test_register_exact_public_contract(client, settings, requested_role):
+    response = register(client, username=" alice ", role=requested_role)
     assert response.status_code == 201
     body = response.get_json()
     assert set(body) == {"user", "token"}
@@ -226,6 +228,37 @@ def test_unencodable_credentials_are_invalid(client, endpoint, status, field):
     response = client.post(f"/v1/auth/{endpoint}", json=credentials)
     assert response.status_code == status
     assert response.get_json() == {"error": "invalid"}
+
+
+def test_persisted_administrator_role_is_valid_and_returned_by_existing_session(client, settings):
+    token = register(client).get_json()["token"]
+    path = Path(settings["DATA_FILE"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["users"]["alice"]["role"] = "administrador"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    client.set_cookie("sereno_session", token)
+    response = client.get("/v1/auth/session")
+
+    assert response.status_code == 200
+    assert response.get_json()["session"]["role"] == "administrador"
+
+
+@pytest.mark.parametrize("role", ["admin", "unknown", "", None, 3])
+def test_unknown_persisted_roles_fail_closed_and_preserve_bytes(settings, role):
+    client = create_app(settings).test_client()
+    assert register(client).status_code == 201
+    path = Path(settings["DATA_FILE"])
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["users"]["alice"]["role"] = role
+    path.write_text(json.dumps(data), encoding="utf-8")
+    before = path.read_bytes()
+
+    response = client.get("/v1/auth/session")
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}
+    assert path.read_bytes() == before
 
 
 def test_corrupt_password_hash_is_server_error_and_preserved(client, settings):

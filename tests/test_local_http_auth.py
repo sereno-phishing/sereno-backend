@@ -78,6 +78,62 @@ def test_development_rejects_nonloopback_or_forwarded_requests(tmp_path, peer, h
     assert path.read_bytes() == before
 
 
+def test_policy_routes_accept_direct_loopback_for_an_administrator(tmp_path):
+    auth_path = tmp_path / "auth.json"
+    policy_path = tmp_path / "policies.json"
+    config = {
+        "TESTING": True,
+        "DATA_FILE": str(auth_path),
+        "POLICY_DATA_FILE": str(policy_path),
+        "AUTH_LOCAL_HTTP": True,
+    }
+    client = create_app(config).test_client()
+    base = "http://127.0.0.1:5000"
+    assert client.post("/v1/auth/register", base_url=base, json={
+        "username": "admin-user", "password": "throwaway",
+    }).status_code == 201
+    data = json.loads(auth_path.read_text(encoding="utf-8"))
+    data["users"]["admin-user"]["role"] = "administrador"
+    auth_path.write_text(json.dumps(data), encoding="utf-8")
+
+    response = client.put("/v1/domains", base_url=base, json={"domains": []})
+
+    assert response.status_code == 200
+    assert response.get_json() == {"domains": []}
+
+
+@pytest.mark.parametrize("peer,host,headers", [
+    ("192.0.2.1", "127.0.0.1:5000", {}),
+    ("127.0.0.1", "example.test", {}),
+    ("127.0.0.1", "127.0.0.1:5000", {"Forwarded": "for=127.0.0.1"}),
+    ("127.0.0.1", "127.0.0.1:5000", {"X-Forwarded-For": "127.0.0.1"}),
+])
+@pytest.mark.parametrize("method", ["GET", "PUT"])
+def test_policy_routes_use_same_loopback_and_forwarded_guards(tmp_path, peer, host, headers, method):
+    auth_path = tmp_path / "auth.json"
+    policy_path = tmp_path / "policies.json"
+    client = create_app({
+        "TESTING": True,
+        "DATA_FILE": str(auth_path),
+        "POLICY_DATA_FILE": str(policy_path),
+        "AUTH_LOCAL_HTTP": True,
+    }).test_client()
+    before = policy_path.read_bytes()
+
+    response = client.open(
+        "/v1/domains",
+        method=method,
+        base_url="http://" + host,
+        environ_overrides={"REMOTE_ADDR": peer},
+        headers=headers,
+        json={"domains": []} if method == "PUT" else None,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "server"}
+    assert policy_path.read_bytes() == before
+
+
 def test_default_cookie_policy_remains_secure(tmp_path, monkeypatch):
     monkeypatch.delenv("AUTH_LOCAL_HTTP", raising=False)
     client = create_app({"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json")}).test_client()
