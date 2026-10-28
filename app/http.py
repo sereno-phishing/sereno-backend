@@ -1,4 +1,7 @@
-from flask import Blueprint, jsonify, request
+from ipaddress import ip_address
+from urllib.parse import urlsplit
+
+from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
 
@@ -8,6 +11,26 @@ COOKIE_NAME = "sereno_session"
 
 def auth_routes(service):
     routes = Blueprint("auth", __name__, url_prefix="/v1/auth")
+
+    @routes.before_request
+    def guard_local_http():
+        if not current_app.config["AUTH_LOCAL_HTTP"]:
+            return None
+        # Direct loopback only: never trust a proxy's forwarded client or host.
+        forwarded = any(name.lower() == "forwarded" or name.lower().startswith("x-forwarded-")
+                        for name in request.headers.keys())
+        try:
+            local = (ip_address(request.remote_addr).is_loopback
+                     and ip_address(urlsplit(request.host_url).hostname).is_loopback)
+        except (ValueError, TypeError):
+            local = False
+        if forwarded or not local:
+            return jsonify(error="server"), 403
+        return None
+
+    def cookie_options():
+        local = current_app.config["AUTH_LOCAL_HTTP"]
+        return {"secure": not local, "httponly": True, "samesite": "Lax" if local else "None"}
 
     def authenticate(action, status):
         try:
@@ -22,7 +45,7 @@ def auth_routes(service):
             return jsonify(error="invalid"), 400 if status == 201 else 401
         response = jsonify(user=user, token=token)
         response.status_code = status
-        response.set_cookie(COOKIE_NAME, token, secure=True, httponly=True, samesite="None")
+        response.set_cookie(COOKIE_NAME, token, **cookie_options())
         return response
 
     @routes.post("/register")
@@ -43,7 +66,7 @@ def auth_routes(service):
             return jsonify(error="invalid"), 400
         service.logout(request.cookies.get(COOKIE_NAME))
         response = jsonify({})
-        response.delete_cookie(COOKIE_NAME, secure=True, httponly=True, samesite="None")
+        response.delete_cookie(COOKIE_NAME, **cookie_options())
         return response
 
     @routes.errorhandler(DuplicateUser)

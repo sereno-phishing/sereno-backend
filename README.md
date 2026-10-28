@@ -1,6 +1,6 @@
 # Sereno authentication backend
 
-Local Flask authentication with replaceable JSON persistence. This development slice implements registration, login, server-side sessions, and logout only. The extension is unchanged; history, verdicts, administration, and ML are not implemented.
+Local Flask authentication with replaceable JSON persistence. Registration, login, server-side sessions, and logout connect to the sibling extension; its history, verdicts, administration, and ML remain mocked.
 
 ## Run locally (PowerShell, Python 3.12)
 
@@ -11,10 +11,11 @@ python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r requirements.txt
 $env:STORAGE_DRIVER = "json"
 $env:DATA_FILE = "data/db.json"
+$env:AUTH_LOCAL_HTTP = "1"
 .venv/Scripts/python.exe -m flask --app app:create_app run --host 127.0.0.1 --port 5000 --no-debugger --no-reload
 ```
 
-Use one process only. Debug mode is off by default; do not enable it or expose this development server publicly. The HTTP command is useful for test clients and diagnostics, but browser cookies require the HTTPS guidance below.
+Use one process only. Debug mode is off by default; do not enable it or expose this development server publicly. Load the sibling `sereno-extension` unpacked, reload it, and register a throwaway account in its popup. Demo credentials are not backend accounts. Keep the address exactly `http://127.0.0.1:5000`.
 
 `STORAGE_DRIVER` defaults to `json`; any other value fails startup. `DATA_FILE` defaults to `data/db.json`. Relative paths always resolve against this backend's root, not the invocation directory. An absent file is initialized with empty `users` and `sessions` objects. Invalid existing data fails closed and is never automatically reset. Fix or restore damaged files manually while the server is stopped. Runtime data, environments, and caches are Git-ignored; no accounts are seeded.
 
@@ -33,7 +34,11 @@ Registration/login accept JSON `{ "username": "alice", "password": "your-passwor
 
 The opaque token is returned for contract compatibility, but authentication uses only the `sereno_session` cookie, not an Authorization header. The cookie is host-only, path `/`, `Secure`, `HttpOnly`, and `SameSite=None`. Logout invalidates the server record; an old copied token cannot restore that session. Multiple logins create independent sessions; logout revokes only the presented token.
 
-For browser development, terminate trusted local HTTPS in front of this localhost server. A plain HTTP localhost launch is not a guarantee that Chrome will accept or send Secure cookies: browser/version exceptions, extension origins, third-party-cookie policies, and credentialed requests still need real integration verification. No Chrome integration has been tested here. No CORS is configured: authorize the exact extension origin before adding credentialed CORS; never use a wildcard origin with credentials.
+`AUTH_LOCAL_HTTP=1` explicitly opts into direct loopback development: cookies keep `HttpOnly` but use `SameSite=Lax` without `Secure`. All auth routes reject non-loopback peer addresses, non-loopback literal hosts, and any `Forwarded`/`X-Forwarded-*` headers with 403 before invoking the service. Do not put this mode behind a proxy. Values other than `1` leave secure defaults on; unset it for HTTPS (`Remove-Item Env:AUTH_LOCAL_HTTP`). No production cookie defaults are weakened.
+
+The extension uses `credentials: "include"` and a host permission for HTTP `127.0.0.1`; no CORS or `cookies` API permission is needed for privileged requests from extension pages. Chrome documents that host-permitted extension requests are treated as same-site, subject to browser cookie settings. Real Chrome cookie acceptance/restoration remains unverified; isolated HTTP tests do not prove browser behavior. For nonlocal use, supply trusted HTTPS and explicit deployment hardening, not this development flag.
+
+References: [Chrome network requests](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests), [Chrome cookies](https://developer.chrome.com/docs/extensions/develop/concepts/storage-and-cookies), [Flask cookie security](https://flask.palletsprojects.com/en/stable/web-security/), [proxy trust](https://flask.palletsprojects.com/en/stable/deploying/proxy_fix/).
 
 ## Architecture and storage limits
 

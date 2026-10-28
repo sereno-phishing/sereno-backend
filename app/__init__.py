@@ -14,6 +14,8 @@ def create_app(config=None):
         app.config.update(config)
     if app.config["STORAGE_DRIVER"] != "json":
         raise ValueError("Unsupported storage driver")
+    if not isinstance(app.config["AUTH_LOCAL_HTTP"], bool):
+        raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
     repository = JsonAuthRepository(data_path(app.config["DATA_FILE"]))
     service = AuthService(repository, generate_password_hash, check_password_hash)
     app.register_blueprint(auth_routes(service))
