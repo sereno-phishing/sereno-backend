@@ -3,8 +3,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from .auth.json_repository import JsonAuthRepository
 from .auth.service import AuthService
-from .config import data_path, settings
-from .http import auth_routes
+from .config import data_path, settings, survey_data_path
+from .http import auth_routes, survey_routes
+from .survey.json_repository import JsonSurveyRepository
+from .survey.service import SurveyService
 
 
 def create_app(config=None):
@@ -16,7 +18,11 @@ def create_app(config=None):
         raise ValueError("Unsupported storage driver")
     if not isinstance(app.config["AUTH_LOCAL_HTTP"], bool):
         raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
-    repository = JsonAuthRepository(data_path(app.config["DATA_FILE"]))
-    service = AuthService(repository, generate_password_hash, check_password_hash)
-    app.register_blueprint(auth_routes(service))
+    auth_repository = JsonAuthRepository(data_path(app.config["DATA_FILE"]))
+    auth_service = AuthService(auth_repository, generate_password_hash, check_password_hash)
+    survey_repository = JsonSurveyRepository(survey_data_path(
+        app.config["DATA_FILE"], app.config.get("SURVEY_DATA_FILE")))
+    survey_service = SurveyService(survey_repository)
+    app.register_blueprint(auth_routes(auth_service))
+    app.register_blueprint(survey_routes(auth_service, survey_service))
     return app

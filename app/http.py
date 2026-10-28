@@ -4,29 +4,31 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
+from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
 
 
 COOKIE_NAME = "sereno_session"
 
 
+def guard_local_http():
+    if not current_app.config["AUTH_LOCAL_HTTP"]:
+        return None
+    # Direct loopback only: never trust a proxy's forwarded client or host.
+    forwarded = any(name.lower() == "forwarded" or name.lower().startswith("x-forwarded-")
+                    for name in request.headers.keys())
+    try:
+        local = (ip_address(request.remote_addr).is_loopback
+                 and ip_address(urlsplit(request.host_url).hostname).is_loopback)
+    except (ValueError, TypeError):
+        local = False
+    if forwarded or not local:
+        return jsonify(error="server"), 403
+    return None
+
+
 def auth_routes(service):
     routes = Blueprint("auth", __name__, url_prefix="/v1/auth")
-
-    @routes.before_request
-    def guard_local_http():
-        if not current_app.config["AUTH_LOCAL_HTTP"]:
-            return None
-        # Direct loopback only: never trust a proxy's forwarded client or host.
-        forwarded = any(name.lower() == "forwarded" or name.lower().startswith("x-forwarded-")
-                        for name in request.headers.keys())
-        try:
-            local = (ip_address(request.remote_addr).is_loopback
-                     and ip_address(urlsplit(request.host_url).hostname).is_loopback)
-        except (ValueError, TypeError):
-            local = False
-        if forwarded or not local:
-            return jsonify(error="server"), 403
-        return None
+    routes.before_request(guard_local_http)
 
     def cookie_options():
         local = current_app.config["AUTH_LOCAL_HTTP"]
@@ -75,6 +77,47 @@ def auth_routes(service):
 
     @routes.errorhandler(StorageError)
     @routes.errorhandler(PasswordVerificationError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def survey_routes(auth_service, survey_service):
+    routes = Blueprint("survey", __name__, url_prefix="/v1")
+    routes.before_request(guard_local_http)
+
+    def current_username():
+        session = auth_service.session(request.cookies.get(COOKIE_NAME))
+        return None if session is None else session["username"]
+
+    @routes.get("/survey")
+    def status():
+        username = current_username()
+        if username is None:
+            return jsonify(error="invalid"), 401
+        return jsonify(submitted=survey_service.has_submitted(username))
+
+    @routes.post("/survey")
+    def submit():
+        username = current_username()
+        if username is None:
+            return jsonify(error="invalid"), 401
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"answers"}:
+            return jsonify(error="invalid"), 400
+        try:
+            survey_service.submit(username, payload["answers"])
+        except InvalidSurvey:
+            return jsonify(error="invalid"), 400
+        return jsonify({})
+
+    @routes.errorhandler(AlreadySubmitted)
+    def already_submitted(error):
+        return jsonify(error="already_submitted"), 409
+
+    @routes.errorhandler(StorageError)
+    @routes.errorhandler(SurveyStorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 

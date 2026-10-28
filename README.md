@@ -1,6 +1,6 @@
 # Sereno authentication backend
 
-Local Flask authentication with replaceable JSON persistence. Registration, login, server-side sessions, and logout connect to the sibling extension; its history, verdicts, administration, and ML remain mocked.
+Local Flask authentication and SUS survey submission with anonymous response records plus separate account participation. Registration, login, server-side sessions, logout, and surveys are real backend functionality; history, verdicts, administration, and ML remain mocked.
 
 ## Run locally (PowerShell, Python 3.12)
 
@@ -17,7 +17,7 @@ $env:AUTH_LOCAL_HTTP = "1"
 
 Use one process only. Debug mode is off by default; do not enable it or expose this development server publicly. Load the sibling `sereno-extension` unpacked, reload it, and register a throwaway account in its popup. Demo credentials are not backend accounts. Keep the address exactly `http://127.0.0.1:5000`.
 
-`STORAGE_DRIVER` defaults to `json`; any other value fails startup. `DATA_FILE` defaults to `data/db.json`. Relative paths always resolve against this backend's root, not the invocation directory. An absent file is initialized with empty `users` and `sessions` objects. Invalid existing data fails closed and is never automatically reset. Fix or restore damaged files manually while the server is stopped. Runtime data, environments, and caches are Git-ignored; no accounts are seeded.
+`STORAGE_DRIVER` defaults to `json`; any other value fails startup. `DATA_FILE` defaults to `data/db.json`. `SURVEY_DATA_FILE` is optional; by default surveys use `surveys.json` beside the resolved `DATA_FILE`. Relative paths always resolve against this backend's root, not the invocation directory. Absent files are initialized with empty auth or survey collections. Invalid existing data fails closed and is never automatically reset. Fix or restore damaged files manually while the server is stopped. Runtime data, environments, and caches are Git-ignored; no accounts are seeded.
 
 ## HTTP contract
 
@@ -27,6 +27,12 @@ Use one process only. Debug mode is off by default; do not enable it or expose t
 | `POST /v1/auth/login` | `200 {user, token}` | `401 {"error":"invalid"}` |
 | `GET /v1/auth/session` | `200 {"session":null}` or `200 {session}` | Storage failure below |
 | `POST /v1/auth/logout` | `200 {}`; revoke session and clear cookie | `400 {"error":"invalid"}` for malformed/nonobject JSON |
+| `GET /v1/survey` | `200 {"submitted":true|false}` for the current account | `401 {"error":"invalid"}` without a valid session |
+| `POST /v1/survey` | `200 {}` after the account's first durable submission | `400 {"error":"invalid"}`, `401 {"error":"invalid"}`, `409 {"error":"already_submitted"}` |
+
+`POST /v1/survey` accepts exactly `{ "answers": [1,2,3,4,5,1,2,3,4,5] }`: ten JSON integers from 1 through 5. Booleans, floats, strings, extra fields, and other lengths are rejected without appending or consuming eligibility. Authentication and account ownership come only from the `sereno_session` cookie; client-supplied usernames are rejected. Each case-sensitive account may submit once. `GET /v1/survey` returns only whether that current account has participated, never answers or participant names.
+
+Participation usernames are stored separately from the anonymous response records. Each response contains only validated answers and a server UTC `submittedAt` timestamp (`YYYY-MM-DDTHH:MM:SSZ`), with no username, token, IP address, participant reference, or identity-specific timestamp binding it to one participant. This separation avoids a direct identity field on responses, but it is not a claim of cryptographic anonymity. There is no survey answer or administration endpoint.
 
 Registration/login accept JSON `{ "username": "alice", "password": "your-password" }`. Usernames are trimmed, nonempty, and case-sensitive; passwords must be nonempty strings and are not trimmed. Registration ignores requested roles and assigns `usuario`. Public users contain exactly `username`, `role`, `createdAt`; sessions contain exactly `username`, `role`, `loginAt`, `token`. Timestamps use UTC `YYYY-MM-DDTHH:MM`. Password hashes never appear in responses. Storage failures during requests return `500 {"error":"server"}` without file paths; startup storage failures prevent serving.
 
@@ -34,7 +40,7 @@ Registration/login accept JSON `{ "username": "alice", "password": "your-passwor
 
 The opaque token is returned for contract compatibility, but authentication uses only the `sereno_session` cookie, not an Authorization header. The cookie is host-only, path `/`, `Secure`, `HttpOnly`, and `SameSite=None`. Logout invalidates the server record; an old copied token cannot restore that session. Multiple logins create independent sessions; logout revokes only the presented token.
 
-`AUTH_LOCAL_HTTP=1` explicitly opts into direct loopback development: cookies keep `HttpOnly` but use `SameSite=Lax` without `Secure`. All auth routes reject non-loopback peer addresses, non-loopback literal hosts, and any `Forwarded`/`X-Forwarded-*` headers with 403 before invoking the service. Do not put this mode behind a proxy. Values other than `1` leave secure defaults on; unset it for HTTPS (`Remove-Item Env:AUTH_LOCAL_HTTP`). No production cookie defaults are weakened.
+`AUTH_LOCAL_HTTP=1` explicitly opts into direct loopback development: cookies keep `HttpOnly` but use `SameSite=Lax` without `Secure`. All auth and survey routes reject non-loopback peer addresses, non-loopback literal hosts, and any `Forwarded`/`X-Forwarded-*` headers with 403 before invoking the service. Do not put this mode behind a proxy. Values other than `1` leave secure defaults on; unset it for HTTPS (`Remove-Item Env:AUTH_LOCAL_HTTP`). No production cookie defaults are weakened.
 
 The extension uses `credentials: "include"` and a host permission for HTTP `127.0.0.1`; no CORS or `cookies` API permission is needed for privileged requests from extension pages. Chrome documents that host-permitted extension requests are treated as same-site, subject to browser cookie settings. Real Chrome cookie acceptance/restoration remains unverified; isolated HTTP tests do not prove browser behavior. For nonlocal use, supply trusted HTTPS and explicit deployment hardening, not this development flag.
 
@@ -51,7 +57,11 @@ Callers/transports and persistence can vary; authentication rules and the HTTP c
 
 The repository contract assumes valid domain records. Registration atomically creates a user and that user's initial session, returning `False` without changes for duplicate usernames. Missing lookups return `None`; revocation is idempotent and affects only the given token. Invalid session references raise `StorageError` without changes. Records are independent snapshots on input/output. Multiple sessions are supported; writing an existing token replaces its session, so the caller must supply unique tokens. Atomicity is process-local, not a distributed transaction guarantee.
 
-`JsonAuthRepository` validates the complete schema, serializes operations using a process-wide lock per resolved file, and writes through a temporary sibling plus `os.replace`. Registration creates the user and initial session atomically. This does not coordinate multiple processes, external writers, network filesystems, or multiple hosts. The file contains password hashes and bearer session tokens: restrict local filesystem access and do not commit or share it.
+`JsonAuthRepository` validates the complete auth schema, serializes operations using a process-wide lock per resolved file, and writes through a temporary sibling plus `os.replace`. Registration creates the user and initial session atomically. `JsonSurveyRepository` uses the same locked atomic-write pattern for a separate `{surveys, participants}` schema; its domain/service depend only on the survey repository Protocol, not Flask or JSON. The duplicate check, participant mark, and anonymous response append occur under one lock and one replacement, so a failed replacement does not consume eligibility. Participant names are sorted to avoid encoding submission order beside response order.
+
+Legacy exact `{surveys:[...]}` files remain readable and are not eagerly rewritten. Missing `participants` means no account has yet been recorded under this policy; the file upgrades only after a successful new submission, preserving all earlier anonymous responses. Malformed participation data fails closed and is preserved rather than reset.
+
+These JSON adapters are single-process only. They do not coordinate multiple processes, external writers, network filesystems, or multiple hosts. The auth file contains password hashes and bearer session tokens, while the survey file contains participant usernames separately from response records: restrict local filesystem access and do not commit, share, or expose either file.
 
 A future database requires a new repository adapter, composition-root selection, contract tests, and explicit data migration; changing an environment variable alone is not enough. No database adapter is implemented now.
 
@@ -66,4 +76,4 @@ This is not production-hardened: session expiry, CSRF protection, rate limiting,
 .venv/Scripts/python.exe -m pytest -q tests/test_auth.py -k smoke
 ```
 
-`tests/test_repository_contract.py` runs the same parametrized behavior suite against JSON and memory, including concurrent duplicate registration, reference integrity, and snapshot isolation. `tests/test_service.py` uses memory plus deterministic hash/verification/clock/token fakes, without Flask clients or real JSON storage. HTTP, corruption preservation, atomic replacement, application recreation, and error regressions remain in `tests/test_auth.py` using isolated temporary files and Flask's test client. These are not browser integration tests.
+`tests/test_repository_contract.py` runs the same parametrized behavior suite against JSON and memory, including concurrent duplicate registration, reference integrity, and snapshot isolation. `tests/test_service.py` uses memory plus deterministic hash/verification/clock/token fakes, without Flask clients or real JSON storage. HTTP, corruption preservation, atomic replacement, application recreation, and error regressions remain in `tests/test_auth.py` using isolated temporary files and Flask's test client. `tests/test_survey.py` and `tests/test_survey_participation.py` cover validation, one-response participation, status restoration, legacy files, storage recovery, and concurrent in-process app/repository instances. These are not browser integration tests.
