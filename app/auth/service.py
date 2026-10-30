@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from secrets import token_urlsafe
 from typing import Callable
 
-from .domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, Session, User
+from .domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, Session, USER_ROLE, User
 from .repository import AuthRepository
 
 
@@ -21,7 +21,7 @@ class AuthService:
 
     def register(self, credentials: Credentials):
         username, password = credentials.username, credentials.password
-        user = User(username, self.hash_password(password), "usuario", self.clock())
+        user = User(username, self.hash_password(password), USER_ROLE, self.clock())
         session = Session(username, self.clock(), self.token_factory())
         if not self.repository.register(user, session):
             raise DuplicateUser
@@ -52,7 +52,7 @@ class AuthService:
         user = self.repository.get_user(session.username)
         if user is None:
             return None
-        return {"username": user.username, "role": user.role,
+        return {"username": user.username, "isAdmin": user.is_admin,
                 "loginAt": session.loginAt, "token": session.token}
 
     def logout(self, token):

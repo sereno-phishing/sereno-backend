@@ -40,7 +40,7 @@ def set_role(config, username, role):
 def make_admin(client, config, username="alice"):
     response = register(client, username)
     assert response.status_code == 201
-    set_role(config, username, "administrador")
+    set_role(config, username, "admin")
     return response.get_json()["token"]
 
 
@@ -76,17 +76,17 @@ def test_existing_session_observes_manual_promotion_and_demotion(config):
     token = register(client).get_json()["token"]
     assert client.get("/v1/domains").status_code == 403
 
-    set_role(config, "alice", "administrador")
+    set_role(config, "alice", "admin")
     promoted = client.get("/v1/domains")
     assert promoted.status_code == 200
     assert promoted.get_json() == {"domains": []}
-    assert client.get("/v1/auth/session").get_json()["session"]["role"] == "administrador"
+    assert client.get("/v1/auth/session").get_json()["session"]["isAdmin"] is True
 
-    set_role(config, "alice", "usuario")
+    set_role(config, "alice", "user")
     demoted = client.put("/v1/domains", json={"domains": []})
     assert demoted.status_code == 403
     assert demoted.get_json() == {"error": "forbidden"}
-    assert client.get("/v1/auth/session").get_json()["session"]["role"] == "usuario"
+    assert client.get("/v1/auth/session").get_json()["session"]["isAdmin"] is False
     assert token
 
 

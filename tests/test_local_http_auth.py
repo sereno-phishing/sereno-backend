@@ -93,7 +93,7 @@ def test_policy_routes_accept_direct_loopback_for_an_administrator(tmp_path):
         "username": "admin-user", "password": "throwaway",
     }).status_code == 201
     data = json.loads(auth_path.read_text(encoding="utf-8"))
-    data["users"]["admin-user"]["role"] = "administrador"
+    data["users"]["admin-user"]["role"] = "admin"
     auth_path.write_text(json.dumps(data), encoding="utf-8")
 
     response = client.put("/v1/domains", base_url=base, json={"domains": []})

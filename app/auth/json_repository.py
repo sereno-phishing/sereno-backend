@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock, RLock
 
-from .domain import Session, StorageError, User
+from .domain import ROLES, Session, StorageError, User
 
 
 _locks = {}
@@ -44,7 +44,7 @@ class JsonAuthRepository:
             if not all(isinstance(value, str) and value for value in record.values()):
                 raise ValueError("Invalid user fields")
             if (key != record["username"] or key != key.strip()
-                    or record["role"] not in {"usuario", "administrador"}):
+                    or record["role"] not in ROLES):
                 raise ValueError("Invalid user identity")
             datetime.strptime(record["createdAt"], "%Y-%m-%dT%H:%M")
         for key, record in sessions.items():

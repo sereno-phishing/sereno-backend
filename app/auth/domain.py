@@ -35,6 +35,11 @@ class Credentials:
         object.__setattr__(self, "username", self.username.strip())
 
 
+USER_ROLE = "user"
+ADMIN_ROLE = "admin"
+ROLES = frozenset({USER_ROLE, ADMIN_ROLE})
+
+
 @dataclass(frozen=True)
 class User:
     username: str
@@ -42,8 +47,12 @@ class User:
     role: str
     createdAt: str
 
+    @property
+    def is_admin(self):
+        return self.role == ADMIN_ROLE
+
     def public(self):
-        return {"username": self.username, "role": self.role, "createdAt": self.createdAt}
+        return {"username": self.username, "isAdmin": self.is_admin, "createdAt": self.createdAt}
 
 
 @dataclass(frozen=True)

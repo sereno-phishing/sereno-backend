@@ -16,7 +16,7 @@ def repository(request, tmp_path):
     return MemoryAuthRepository()
 
 
-USER = User("alice", "hash", "usuario", "2026-10-27T12:30")
+USER = User("alice", "hash", "user", "2026-10-27T12:30")
 SESSION = Session("alice", "2026-10-27T12:30", "initial")
 
 

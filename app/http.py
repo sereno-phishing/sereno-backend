@@ -92,7 +92,7 @@ def policy_routes(auth_service, policy_service):
         session = auth_service.session(request.cookies.get(COOKIE_NAME))
         if session is None:
             return None, (jsonify(error="invalid"), 401)
-        if session["role"] != "administrador":
+        if session["isAdmin"] is not True:
             return None, (jsonify(error="forbidden"), 403)
         return session, None
 

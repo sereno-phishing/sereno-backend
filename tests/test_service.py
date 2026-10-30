@@ -48,11 +48,11 @@ def test_non_http_credentials_enforce_invariants(username, password):
 def test_typed_registration_login_and_selective_logout(service):
     credentials = domain.Credentials(" alice ", "secret")
     user, token = service.register(credentials)
-    assert user == {"username": "alice", "role": "usuario", "createdAt": "2026-10-27T12:30"}
+    assert user == {"username": "alice", "isAdmin": False, "createdAt": "2026-10-27T12:30"}
     assert token == "initial"
     assert service.repository.get_user("alice").password_hash == "hash:secret"
     assert service.login(credentials) == (user, "login")
-    assert service.session("login") == {"username": "alice", "role": "usuario",
+    assert service.session("login") == {"username": "alice", "isAdmin": False,
                                         "loginAt": "2026-10-27T12:30", "token": "login"}
     service.logout(token)
     service.logout(token)

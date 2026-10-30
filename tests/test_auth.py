@@ -33,9 +33,10 @@ def test_register_exact_public_contract(client, settings, requested_role):
     assert response.status_code == 201
     body = response.get_json()
     assert set(body) == {"user", "token"}
-    assert set(body["user"]) == {"username", "role", "createdAt"}
+    assert set(body["user"]) == {"username", "isAdmin", "createdAt"}
     assert body["user"]["username"] == "alice"
-    assert body["user"]["role"] == "usuario"
+    assert body["user"]["isAdmin"] is False
+    assert "role" not in body["user"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", body["user"]["createdAt"])
     assert len(body["token"]) >= 32
     cookie = response.headers["Set-Cookie"]
@@ -97,9 +98,9 @@ def test_smoke_persisted_session_and_revocation(settings):
     response = recreated.get("/v1/auth/session")
     assert response.status_code == 200
     session = response.get_json()["session"]
-    assert set(session) == {"username", "role", "loginAt", "token"}
+    assert set(session) == {"username", "isAdmin", "loginAt", "token"}
     assert session["username"] == "alice"
-    assert session["role"] == "usuario"
+    assert session["isAdmin"] is False
     assert session["token"] == token
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", session["loginAt"])
     response = recreated.post("/v1/auth/logout", json={})
@@ -154,7 +155,7 @@ def test_repository_contract_and_injected_hashing(tmp_path):
                           lambda hashed, value: hashed == "hashed:" + value,
                           clock=lambda: "2026-10-27T12:30", token_factory=lambda: "token")
     user, token = service.register(Credentials("alice", "secret"))
-    assert user == {"username": "alice", "role": "usuario", "createdAt": "2026-10-27T12:30"}
+    assert user == {"username": "alice", "isAdmin": False, "createdAt": "2026-10-27T12:30"}
     assert repo.get_user("alice").password_hash == "hashed:secret"
     assert repo.get_session(token).username == "alice"
     assert service.login(Credentials("alice", "secret"))[0] == user
@@ -234,17 +235,17 @@ def test_persisted_administrator_role_is_valid_and_returned_by_existing_session(
     token = register(client).get_json()["token"]
     path = Path(settings["DATA_FILE"])
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"]["alice"]["role"] = "administrador"
+    data["users"]["alice"]["role"] = "admin"
     path.write_text(json.dumps(data), encoding="utf-8")
 
     client.set_cookie("sereno_session", token)
     response = client.get("/v1/auth/session")
 
     assert response.status_code == 200
-    assert response.get_json()["session"]["role"] == "administrador"
+    assert response.get_json()["session"]["isAdmin"] is True
 
 
-@pytest.mark.parametrize("role", ["admin", "unknown", "", None, 3])
+@pytest.mark.parametrize("role", ["administrador", "usuario", "Admin", "unknown", "", None, 3])
 def test_unknown_persisted_roles_fail_closed_and_preserve_bytes(settings, role):
     client = create_app(settings).test_client()
     assert register(client).status_code == 201
