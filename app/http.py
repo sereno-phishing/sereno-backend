@@ -6,6 +6,7 @@ from flask import Blueprint, current_app, jsonify, request
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
 from .cache.domain import CacheStorageError, InvalidCache
 from .history.domain import HistoryStorageError
+from .metrics.domain import QueryLogStorageError
 from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
 from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
 from .verdict.service import ClassifierError, InvalidUrl
@@ -250,6 +251,10 @@ def verdict_routes(auth_service, verdict_service):
             return jsonify(error="invalid"), 400
         return jsonify(verdict_service.evaluate(payload["url"], optional_username()))
 
+    @routes.get("/model")
+    def model():
+        return jsonify(version=verdict_service.model_version())
+
     @routes.errorhandler(InvalidUrl)
     def invalid(error):
         return jsonify(error="invalid"), 400
@@ -286,6 +291,26 @@ def history_routes(auth_service, history_service):
 
     @routes.errorhandler(StorageError)
     @routes.errorhandler(HistoryStorageError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def metrics_routes(auth_service, metrics_service):
+    routes = Blueprint("metrics", __name__, url_prefix="/v1")
+    routes.before_request(guard_local_http)
+    authorize = admin_authorizer(auth_service)
+
+    @routes.get("/metrics")
+    def metrics():
+        _, denied = authorize()
+        if denied:
+            return denied
+        return jsonify(metrics=metrics_service.metrics())
+
+    @routes.errorhandler(StorageError)
+    @routes.errorhandler(QueryLogStorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 

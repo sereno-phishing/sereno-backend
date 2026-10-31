@@ -18,13 +18,15 @@ English technical artifacts. Strict TDD (pytest / node --test), RED before GREEN
 - [x] T1 Backend cache: repository port + JSON/memory adapters, TTL and invalidations, `GET /v1/cache`, `PUT /v1/cache/ttl`, `POST /v1/cache/invalidations`. Route: delegated (multi-file write).
 - [x] T2 Backend verdict: `Classifier` port + `FakeClassifier`, cache lookup by TTL, `POST /v1/verdict`, history recorded for signed-in users. Route: delegated.
 - [x] T3 Backend history: `GET/DELETE /v1/history` per user. Route: delegated.
-- [ ] T4 Backend metrics and model: `GET /v1/metrics` computed from stored data, `GET /v1/model` reports the classifier version. Route: delegated.
+- [x] T4 Backend metrics and model: `GET /v1/metrics` computed from stored data, `GET /v1/model` reports the classifier version. Route: delegated.
 - [ ] T5 Extension: `provider: "remote"`, README/tests updated, end-to-end local HTTP test. Route: delegated.
 
 ## Progress and evidence
 - T1: RED `pytest tests/test_cache.py` -> collection error (no `app.cache`). GREEN full suite 273 passed (229 + 44). Cache routes admin-only (401/403 like domains); storage failure 503 `cache_down`. Invalidation date ISO `YYYY-MM-DD` (seed format; the mock writes `DD/MM/YYYY`, the UI accepts both). Pending invalidations become `Reevaluado: <status>` on the next model evaluation (seed shows that state). Default invalidations empty (seed rows are demo data).
 - T2: RED `pytest tests/test_verdict.py` -> ModuleNotFoundError `app.history`. GREEN full suite 306 passed (two consecutive runs). History repository/service built here (record on verdict); routes in T3. Mock applies no domain policy to verdicts (mock.js `evaluate`), so neither does the backend. Auth storage failure while reading the session -> verdict still served, not recorded. The new per-app files exposed a transient Windows `PermissionError` on `os.replace` in the concurrent survey test (baseline 12/12 pass, ~50% fail after); fixed with a bounded retry shared by all JSON adapters (separate `fix(storage)` commit).
 - T3: RED `pytest tests/test_history.py` -> 4 failed (404). GREEN full suite 309 passed. 401 `invalid` without session (the mock returns an empty list when signed out; the task asks for 401 and the history service only lists for a signed-in user). Removed the obsolete `test_no_placeholder_endpoints` (it asserted `/v1/history` was 404).
+- T4: RED `pytest tests/test_metrics.py` -> ModuleNotFoundError `app.metrics`. GREEN full suite 319 passed. Metrics come from a bounded query log of every verdict (anonymous included) because history only holds signed-in visits. The seed metrics shape has no model-quality field, so no placeholder values were needed. `/v1/metrics` admin-only (401/403); `/v1/model` public (the mock checks nothing and the popup only reads a version).
+- Open for T5: `remote.js` accepts `forbidden` only from domain-policy requests, so a non-admin on cache/metrics sees `server`; add `["forbidden"]` to those calls if the specific message is wanted.
 
 ## Next step
-T4.
+T5.

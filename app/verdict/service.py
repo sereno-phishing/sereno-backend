@@ -20,13 +20,19 @@ class ClassifierError(Exception):
 class VerdictService:
     """Cache first (per-status TTL, invalidations), the classifier on a miss.
     Cache storage failures propagate as CacheStorageError (cache_down). The
-    signed-in user's history is a side effect that never fails the verdict."""
+    signed-in user's history and the metrics query log are side effects that
+    never fail the verdict."""
 
-    def __init__(self, cache: CacheService, classifier: Classifier, history, timer=perf_counter):
+    def __init__(self, cache: CacheService, classifier: Classifier, history, timer=perf_counter,
+                 query_log=None):
         self.cache = cache
         self.classifier = classifier
         self.history = history
         self.timer = timer
+        self.query_log = query_log
+
+    def model_version(self):
+        return self.classifier.version
 
     def evaluate(self, url, username):
         if not isinstance(url, str):
@@ -45,8 +51,10 @@ class VerdictService:
         latency = max(0, round((self.timer() - started) * 1000))
         verdict = {"domain": domain, "status": status, "score": score,
                    "source": source, "latencyMs": latency}
+        if self.query_log is not None:
+            self._side_effect("Query not logged", self.query_log.record, dict(verdict))
         if username:
-            self._record(username, verdict)
+            self._side_effect("History not recorded", self.history.record, username, dict(verdict))
         return verdict
 
     def _classify(self, url):
@@ -59,8 +67,9 @@ class VerdictService:
             raise ClassifierError
         return result
 
-    def _record(self, username, verdict):
+    @staticmethod
+    def _side_effect(message, action, *arguments):
         try:
-            self.history.record(username, dict(verdict))
+            action(*arguments)
         except Exception:
-            logger.warning("History not recorded", exc_info=True)
+            logger.warning(message, exc_info=True)
