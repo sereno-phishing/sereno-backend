@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock, RLock
 
+from ..json_file import replace_file
 from .domain import ROLES, Session, StorageError, User
 
 
@@ -75,7 +76,7 @@ class JsonAuthRepository:
                 json.dump(data, target, ensure_ascii=True, indent=2)
                 target.flush()
                 os.fsync(target.fileno())
-            os.replace(temporary, self.path)
+            replace_file(temporary, self.path)
         except (OSError, ValueError, TypeError) as error:
             raise StorageError("Storage unavailable") from error
         finally:
