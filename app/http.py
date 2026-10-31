@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
 from .cache.domain import CacheStorageError, InvalidCache
+from .history.domain import HistoryStorageError
 from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
 from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
 from .verdict.service import ClassifierError, InvalidUrl
@@ -258,6 +259,33 @@ def verdict_routes(auth_service, verdict_service):
         return jsonify(error="cache_down"), 503
 
     @routes.errorhandler(ClassifierError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def history_routes(auth_service, history_service):
+    routes = Blueprint("history", __name__, url_prefix="/v1")
+    routes.before_request(guard_local_http)
+
+    @routes.get("/history")
+    def entries():
+        username = current_username(auth_service)
+        if username is None:
+            return jsonify(error="invalid"), 401
+        return jsonify(entries=history_service.list(username))
+
+    @routes.delete("/history")
+    def clear():
+        username = current_username(auth_service)
+        if username is None:
+            return jsonify(error="invalid"), 401
+        history_service.clear(username)
+        return jsonify({})
+
+    @routes.errorhandler(StorageError)
+    @routes.errorhandler(HistoryStorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 

@@ -196,10 +196,6 @@ def test_failed_atomic_replace_keeps_original(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_no_placeholder_endpoints(client):
-    assert client.get("/v1/history").status_code == 404
-
-
 @pytest.mark.parametrize("body", ["{", "[]", "null", '"text"'])
 def test_logout_rejects_invalid_json(client, body):
     response = client.post("/v1/auth/logout", data=body, content_type="application/json")

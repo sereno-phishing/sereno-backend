@@ -39,6 +39,8 @@ Public registration always creates a `user`, even if the request supplies a role
 | `GET /v1/domains` | `200 {"domains":[...]}` for an administrator | `401 {"error":"invalid"}`, `403 {"error":"forbidden"}` |
 | `PUT /v1/domains` | `200 {"domains":[...]}` after whole-list replacement | `400 {"error":"invalid"}`, `401 {"error":"invalid"}`, `403 {"error":"forbidden"}` |
 | `POST /v1/verdict` | `200 {domain, status, score, source, latencyMs}`; anonymous allowed | `400 {"error":"invalid"}`, `500 {"error":"server"}` (classifier), `503 {"error":"cache_down"}` |
+| `GET /v1/history` | `200 {"entries":[{id, domain, status, score, source, ts, latencyMs}]}` for the current account, newest first | `401 {"error":"invalid"}`, `500 {"error":"server"}` |
+| `DELETE /v1/history` | `200 {}` after clearing the current account's history | `401 {"error":"invalid"}`, `500 {"error":"server"}` |
 | `GET /v1/cache` | `200 {"cache":{ttlPhishingDays, ttlLegitHours, invalidations}}` for an administrator | `401 {"error":"invalid"}`, `403 {"error":"forbidden"}`, `503 {"error":"cache_down"}` |
 | `PUT /v1/cache/ttl` | `200 {"cache":{...}}` | `400 {"error":"invalid"}`, `401`, `403`, `503` as above |
 | `POST /v1/cache/invalidations` | `200 {"cache":{...}}` with the new invalidation first | `400 {"error":"invalid"}`, `401`, `403`, `503` as above |

@@ -9,7 +9,8 @@ from .config import (cache_data_path, data_path, history_data_path, policy_data_
                      survey_data_path)
 from .history.json_repository import JsonHistoryRepository
 from .history.service import HistoryService
-from .http import auth_routes, cache_routes, policy_routes, survey_routes, verdict_routes
+from .http import (auth_routes, cache_routes, history_routes, policy_routes, survey_routes,
+                   verdict_routes)
 from .policy.json_repository import JsonPolicyRepository
 from .policy.service import PolicyService
 from .survey.json_repository import JsonSurveyRepository
@@ -51,4 +52,5 @@ def create_app(config=None, clock=None, classifier=None):
     app.register_blueprint(survey_routes(auth_service, survey_service))
     app.register_blueprint(cache_routes(auth_service, cache_service))
     app.register_blueprint(verdict_routes(auth_service, verdict_service))
+    app.register_blueprint(history_routes(auth_service, history_service))
     return app
