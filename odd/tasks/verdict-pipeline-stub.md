@@ -16,13 +16,14 @@ English technical artifacts. Strict TDD (pytest / node --test), RED before GREEN
 
 ## Work units
 - [x] T1 Backend cache: repository port + JSON/memory adapters, TTL and invalidations, `GET /v1/cache`, `PUT /v1/cache/ttl`, `POST /v1/cache/invalidations`. Route: delegated (multi-file write).
-- [ ] T2 Backend verdict: `Classifier` port + `FakeClassifier`, cache lookup by TTL, `POST /v1/verdict`, history recorded for signed-in users. Route: delegated.
+- [x] T2 Backend verdict: `Classifier` port + `FakeClassifier`, cache lookup by TTL, `POST /v1/verdict`, history recorded for signed-in users. Route: delegated.
 - [ ] T3 Backend history: `GET/DELETE /v1/history` per user. Route: delegated.
 - [ ] T4 Backend metrics and model: `GET /v1/metrics` computed from stored data, `GET /v1/model` reports the classifier version. Route: delegated.
 - [ ] T5 Extension: `provider: "remote"`, README/tests updated, end-to-end local HTTP test. Route: delegated.
 
 ## Progress and evidence
 - T1: RED `pytest tests/test_cache.py` -> collection error (no `app.cache`). GREEN full suite 273 passed (229 + 44). Cache routes admin-only (401/403 like domains); storage failure 503 `cache_down`. Invalidation date ISO `YYYY-MM-DD` (seed format; the mock writes `DD/MM/YYYY`, the UI accepts both). Pending invalidations become `Reevaluado: <status>` on the next model evaluation (seed shows that state). Default invalidations empty (seed rows are demo data).
+- T2: RED `pytest tests/test_verdict.py` -> ModuleNotFoundError `app.history`. GREEN full suite 306 passed (two consecutive runs). History repository/service built here (record on verdict); routes in T3. Mock applies no domain policy to verdicts (mock.js `evaluate`), so neither does the backend. Auth storage failure while reading the session -> verdict still served, not recorded. The new per-app files exposed a transient Windows `PermissionError` on `os.replace` in the concurrent survey test (baseline 12/12 pass, ~50% fail after); fixed with a bounded retry shared by all JSON adapters (separate `fix(storage)` commit).
 
 ## Next step
-T2.
+T3.

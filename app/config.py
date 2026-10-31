@@ -11,6 +11,7 @@ def settings():
             "SURVEY_DATA_FILE": os.environ.get("SURVEY_DATA_FILE"),
             "POLICY_DATA_FILE": os.environ.get("POLICY_DATA_FILE"),
             "CACHE_DATA_FILE": os.environ.get("CACHE_DATA_FILE"),
+            "HISTORY_DATA_FILE": os.environ.get("HISTORY_DATA_FILE"),
             "AUTH_LOCAL_HTTP": os.environ.get("AUTH_LOCAL_HTTP") == "1"}
 
 
@@ -35,3 +36,7 @@ def policy_data_path(auth_value, policy_value=None):
 
 def cache_data_path(auth_value, cache_value=None):
     return adjacent_data_path(auth_value, cache_value, "cache.json")
+
+
+def history_data_path(auth_value, history_value=None):
+    return adjacent_data_path(auth_value, history_value, "history.json")

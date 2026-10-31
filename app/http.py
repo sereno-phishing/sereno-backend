@@ -7,6 +7,7 @@ from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, Passwor
 from .cache.domain import CacheStorageError, InvalidCache
 from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
 from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
+from .verdict.service import ClassifierError, InvalidUrl
 
 
 COOKIE_NAME = "sereno_session"
@@ -26,6 +27,12 @@ def guard_local_http():
     if forwarded or not local:
         return jsonify(error="server"), 403
     return None
+
+
+def current_username(auth_service):
+    """The signed-in username, or None without a valid session."""
+    session = auth_service.session(request.cookies.get(COOKIE_NAME))
+    return None if session is None else session["username"]
 
 
 def admin_authorizer(auth_service):
@@ -146,20 +153,16 @@ def survey_routes(auth_service, survey_service):
     routes = Blueprint("survey", __name__, url_prefix="/v1")
     routes.before_request(guard_local_http)
 
-    def current_username():
-        session = auth_service.session(request.cookies.get(COOKIE_NAME))
-        return None if session is None else session["username"]
-
     @routes.get("/survey")
     def status():
-        username = current_username()
+        username = current_username(auth_service)
         if username is None:
             return jsonify(error="invalid"), 401
         return jsonify(submitted=survey_service.has_submitted(username))
 
     @routes.post("/survey")
     def submit():
-        username = current_username()
+        username = current_username(auth_service)
         if username is None:
             return jsonify(error="invalid"), 401
         payload = request.get_json(silent=True)
@@ -221,6 +224,40 @@ def cache_routes(auth_service, cache_service):
         return jsonify(error="cache_down"), 503
 
     @routes.errorhandler(StorageError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def verdict_routes(auth_service, verdict_service):
+    routes = Blueprint("verdict", __name__, url_prefix="/v1")
+    routes.before_request(guard_local_http)
+
+    def optional_username():
+        # The verdict is the protection itself: an auth storage failure only
+        # skips the history record, it never blocks the evaluation.
+        try:
+            return current_username(auth_service)
+        except StorageError:
+            return None
+
+    @routes.post("/verdict")
+    def verdict():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"url"}:
+            return jsonify(error="invalid"), 400
+        return jsonify(verdict_service.evaluate(payload["url"], optional_username()))
+
+    @routes.errorhandler(InvalidUrl)
+    def invalid(error):
+        return jsonify(error="invalid"), 400
+
+    @routes.errorhandler(CacheStorageError)
+    def cache_down(error):
+        return jsonify(error="cache_down"), 503
+
+    @routes.errorhandler(ClassifierError)
     def unavailable(error):
         return jsonify(error="server"), 500
 
