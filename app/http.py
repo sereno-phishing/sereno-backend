@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
+from .cache.domain import CacheStorageError, InvalidCache
 from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
 from .survey.domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError
 
@@ -25,6 +26,19 @@ def guard_local_http():
     if forwarded or not local:
         return jsonify(error="server"), 403
     return None
+
+
+def admin_authorizer(auth_service):
+    """-> authorize() returning (session, None) for an administrator, or
+    (None, response) with 401 invalid (no session) or 403 forbidden."""
+    def authorize():
+        session = auth_service.session(request.cookies.get(COOKIE_NAME))
+        if session is None:
+            return None, (jsonify(error="invalid"), 401)
+        if session["isAdmin"] is not True:
+            return None, (jsonify(error="forbidden"), 403)
+        return session, None
+    return authorize
 
 
 def auth_routes(service):
@@ -87,14 +101,7 @@ def auth_routes(service):
 def policy_routes(auth_service, policy_service):
     routes = Blueprint("policy", __name__, url_prefix="/v1")
     routes.before_request(guard_local_http)
-
-    def authorize():
-        session = auth_service.session(request.cookies.get(COOKIE_NAME))
-        if session is None:
-            return None, (jsonify(error="invalid"), 401)
-        if session["isAdmin"] is not True:
-            return None, (jsonify(error="forbidden"), 403)
-        return session, None
+    authorize = admin_authorizer(auth_service)
 
     @routes.get("/domains")
     def list_domains():
@@ -170,6 +177,50 @@ def survey_routes(auth_service, survey_service):
 
     @routes.errorhandler(StorageError)
     @routes.errorhandler(SurveyStorageError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+def cache_routes(auth_service, cache_service):
+    routes = Blueprint("cache", __name__, url_prefix="/v1/cache")
+    routes.before_request(guard_local_http)
+    authorize = admin_authorizer(auth_service)
+
+    @routes.before_request
+    def administrators_only():
+        _, denied = authorize()
+        return denied
+
+    @routes.get("")
+    def view():
+        return jsonify(cache=cache_service.view())
+
+    @routes.put("/ttl")
+    def set_ttl():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"ttlPhishingDays", "ttlLegitHours"}:
+            return jsonify(error="invalid"), 400
+        return jsonify(cache=cache_service.set_ttl(payload["ttlPhishingDays"],
+                                                   payload["ttlLegitHours"]))
+
+    @routes.post("/invalidations")
+    def invalidate():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"domain"}:
+            return jsonify(error="invalid"), 400
+        return jsonify(cache=cache_service.invalidate(payload["domain"]))
+
+    @routes.errorhandler(InvalidCache)
+    def invalid(error):
+        return jsonify(error="invalid"), 400
+
+    @routes.errorhandler(CacheStorageError)
+    def cache_down(error):
+        return jsonify(error="cache_down"), 503
+
+    @routes.errorhandler(StorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 

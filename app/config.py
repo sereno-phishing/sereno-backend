@@ -10,6 +10,7 @@ def settings():
             "DATA_FILE": os.environ.get("DATA_FILE", "data/db.json"),
             "SURVEY_DATA_FILE": os.environ.get("SURVEY_DATA_FILE"),
             "POLICY_DATA_FILE": os.environ.get("POLICY_DATA_FILE"),
+            "CACHE_DATA_FILE": os.environ.get("CACHE_DATA_FILE"),
             "AUTH_LOCAL_HTTP": os.environ.get("AUTH_LOCAL_HTTP") == "1"}
 
 
@@ -30,3 +31,7 @@ def survey_data_path(auth_value, survey_value=None):
 
 def policy_data_path(auth_value, policy_value=None):
     return adjacent_data_path(auth_value, policy_value, "policies.json")
+
+
+def cache_data_path(auth_value, cache_value=None):
+    return adjacent_data_path(auth_value, cache_value, "cache.json")
