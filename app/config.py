@@ -3,10 +3,17 @@ from pathlib import Path
 
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
+CLASSIFIERS = ("model", "fake")
+# The artifact trained in the sibling sereno-model repository.
+DEFAULT_MODEL_PATH = "../sereno-model/artifacts/2.0.0/model.joblib"
 
 
 def settings():
-    return {"STORAGE_DRIVER": os.environ.get("STORAGE_DRIVER", "json"),
+    # CLASSIFIER defaults to the fake so that nothing (the test suite first)
+    # loads the model artifact unless asked to; start.ps1 asks for the model.
+    return {"CLASSIFIER": os.environ.get("CLASSIFIER", "fake"),
+            "MODEL_PATH": os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH),
+            "STORAGE_DRIVER": os.environ.get("STORAGE_DRIVER", "json"),
             "DATA_FILE": os.environ.get("DATA_FILE", "data/db.json"),
             "SURVEY_DATA_FILE": os.environ.get("SURVEY_DATA_FILE"),
             "POLICY_DATA_FILE": os.environ.get("POLICY_DATA_FILE"),
@@ -19,6 +26,11 @@ def settings():
 def data_path(value):
     path = Path(value)
     return path if path.is_absolute() else BACKEND_ROOT / path
+
+
+def model_path(value):
+    """MODEL_PATH resolved against the backend root, with ".." collapsed."""
+    return Path(os.path.normpath(data_path(value)))
 
 
 def adjacent_data_path(auth_value, configured_value, filename):

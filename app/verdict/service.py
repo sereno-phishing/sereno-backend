@@ -37,7 +37,11 @@ class VerdictService:
         self.policies = policies
 
     def model_version(self):
-        return self.classifier.version
+        try:
+            return self.classifier.version
+        except Exception as error:  # a lazily loaded model can fail here
+            logger.error("Model version unavailable: %s", error)
+            raise ClassifierError from error
 
     def evaluate(self, url, username):
         parts = parse(url)
@@ -67,6 +71,7 @@ class VerdictService:
         try:
             result = self.classifier.classify(url)
         except Exception as error:
+            logger.error("Classifier failed: %s", error)
             raise ClassifierError from error
         if (not isinstance(result, Classification) or result.verdict not in VERDICTS
                 or type(result.score) not in (int, float) or not 0 <= result.score <= 1):

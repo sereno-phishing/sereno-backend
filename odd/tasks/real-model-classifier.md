@@ -30,7 +30,7 @@ English technical artifacts. Test first (pytest), RED before GREEN. Conventional
 
 ## Work units
 - [x] T1 Two-class port and pipeline: `Classification(verdict, score)`, URL validation and normalized-URL cache key, policy lookup in the response, history, cache and metrics on `verdict` + `policy`. Route: delegated (multi-file write).
-- [ ] T2 `ModelClassifier` adapter: lazy `joblib.load`, `CLASSIFIER` (`model` | `fake`) and `MODEL_PATH` settings, model dependencies, `start.ps1` and README. Route: delegated.
+- [x] T2 `ModelClassifier` adapter: lazy `joblib.load`, `CLASSIFIER` (`model` | `fake`) and `MODEL_PATH` settings, model dependencies, `start.ps1` and README. Route: delegated.
 - [ ] T3 Local end-to-end check with the real artifact over HTTP. Route: parent spot check.
 
 ## Checks
@@ -39,7 +39,7 @@ English technical artifacts. Test first (pytest), RED before GREEN. Conventional
 ## Progress and evidence
 Branch `feat/real-model-classifier` from `48f6909`.
 
-### T1 (route: delegated writer)
+### T1 (route: delegated writer) — commit `7a63643`
 - RED: after rewriting the tests, `pytest -q --continue-on-collection-errors` gave 35 failed, 271 passed, 1 collection error (`tests/test_verdict.py`: `No module named 'app.verdict.url'`).
 - GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 355 passed.
 - The normalizer is imported from `sereno_model.data.normalize` behind `app/verdict/url.py`; that module only needs the standard library, so the suite loads no ML dependency. The package itself must be installed (`pip install --no-deps -e ../sereno-model`).
@@ -47,5 +47,13 @@ Branch `feat/real-model-classifier` from `48f6909`.
 - Added without being in the task text, so the local `data/` files keep working: history and query-log records with the former three-state `status` are upgraded on read; cache entries keyed by domain are dropped on read.
 - A policy store failure during a verdict answers with the default policy and logs a warning instead of failing the verdict.
 
+### T2 (route: delegated writer)
+- RED: `pytest -q tests/test_model_classifier.py` -> collection error (`cannot import name 'model_path' from 'app.config'`; no `app.verdict.model_classifier`).
+- GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 371 passed, the real-artifact integration test included (not skipped).
+- Installed into `.venv`: `requirements-model.txt` (resolved to the same versions as `../sereno-model/requirements.txt`, transitive ones included) and `pip install --no-deps -e ../sereno-model`. `pyarrow` is required: `sereno_model.models.stacking` imports `sereno_model.data.split`, which imports it.
+- Default `CLASSIFIER=fake`; `start.ps1` sets `CLASSIFIER=model` unless the caller set it. `MODEL_PATH` defaults to `../sereno-model/artifacts/2.0.0/model.joblib`.
+- Run over HTTP (`CLASSIFIER=model`, spare port 5057, scratch `DATA_FILE`): `POST /v1/verdict {"url":"https://www.google.com/"}` -> `{"domain":"google.com","latencyMs":2336,"policy":"advertencia","score":0.0271...,"source":"modelo","verdict":"legitima"}`; a phishing-looking URL -> `verdict: "phishing"`, score 0.9896, 18 ms; the first URL again -> `source: "cache"`, 7 ms; `shop.pe` -> 400; `GET /v1/model` -> `{"version":"2.0.0"}`.
+- Model load: about 13.5 s cold (first import of the ML libraries), about 2 s once the files are in the OS cache. It happens on the first verdict or `/v1/model` request, not at startup.
+
 ## Next step
-T2.
+T3: parent end-to-end check with the extension against `.\start.ps1`. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.

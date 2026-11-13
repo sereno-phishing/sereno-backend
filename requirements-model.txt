@@ -1,0 +1,22 @@
+# Runtime of the trained Stacking model (CLASSIFIER=model). The pickled
+# artifact needs exactly the library versions it was trained with: these pins
+# are copied from ../sereno-model/requirements.txt (artifact 2.0.0) and must
+# change together with it. The test and tooling pins of that file are left out.
+#
+# Install, from sereno-backend/:
+#   .venv/Scripts/python.exe -m pip install -r requirements-model.txt
+#   .venv/Scripts/python.exe -m pip install --no-deps -e ../sereno-model
+# The second line is also needed without the model (CLASSIFIER=fake): the
+# backend takes its URL normalizer from that package. It is installed with
+# --no-deps because its dependencies are the pins below.
+joblib==1.6.0
+lightgbm==4.7.0
+numpy==2.5.4
+pandas==3.1.0
+# Imported by sereno_model.data.split, which sereno_model.models.stacking loads.
+pyarrow==26.0.1
+scikit-learn==1.9.1
+scipy==1.18.1
+threadpoolctl==3.7.0
+tldextract==5.4.0
+xgboost==3.4.1
