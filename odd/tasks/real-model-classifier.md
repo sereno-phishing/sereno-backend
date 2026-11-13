@@ -60,6 +60,7 @@ Branch `feat/real-model-classifier` from `48f6909`.
 - Rows stored with a `status` text are upgraded on read (`"Reevaluado: ..."` to its class, anything else to `null`).
 - RED: `pytest -q tests/test_cache.py tests/test_verdict.py` -> 8 failed, 97 passed. GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 372 passed.
 - `node --test tests/verdict-local-http.test.js` from `../sereno-extension` -> 1 passed, 0 failed.
+- Commit `923bba2`. One of several full-suite runs around it failed on `tests/test_metrics.py::test_metrics_reflect_every_verdict_including_anonymous` (`['Modelo', 'Modelo', 'Caché']`): a flake that predates this work, the queries table ordered events sharing a clock instant arbitrarily. Fixed in the next commit with a deterministic test (RED: 2 failed in `tests/test_metrics.py`; GREEN: 373 passed, five consecutive full runs).
 
 ## Next step
 T3: parent end-to-end check with the extension against `.\start.ps1`. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.

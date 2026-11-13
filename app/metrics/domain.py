@@ -109,7 +109,9 @@ def _sparklines(events, now):
 
 
 def _queries(events, now):
-    newest = sorted(events, key=lambda item: item.at, reverse=True)[:QUERY_ROWS]
+    # The log is oldest first; walking it backwards makes the stable sort put
+    # the last logged first among events that share an instant.
+    newest = sorted(reversed(events), key=lambda item: item.at, reverse=True)[:QUERY_ROWS]
     return [{"domain": item.domain,
              "stamp": item.at.astimezone(now.tzinfo).strftime("%d/%m/%Y %H:%M"),
              "source": SOURCE_LABELS[item.source], "latencyMs": item.latencyMs,

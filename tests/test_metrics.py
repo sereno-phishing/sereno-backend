@@ -110,6 +110,15 @@ def test_latest_queries_are_newest_first_capped_and_formatted_for_the_table():
     assert queries[1]["stamp"] == "31/10/2026 11:00"
 
 
+def test_queries_logged_at_the_same_instant_list_the_last_logged_first():
+    # The clock can return the same instant for consecutive requests (Windows timer resolution).
+    events = [event(1, domain="older.pe"), event(0, domain="first.pe"),
+              event(0, domain="second.pe"), event(0, domain="third.pe")]
+    queries = compute_metrics(events, NOW)["queries"]
+    assert [query["domain"] for query in queries] == ["third.pe", "second.pe", "first.pe",
+                                                      "older.pe"]
+
+
 def test_json_query_log_keeps_newest_capacity(tmp_path):
     assert CAPACITY >= 1000
     repository = JsonQueryLogRepository(tmp_path / "queries.json", capacity=5)
