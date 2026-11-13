@@ -26,6 +26,7 @@ class CacheService:
             lambda state: self._public(state.with_ttl(phishing_days, legit_hours)))
 
     def invalidate(self, raw_domain):
+        """Drops every cached entry of the domain, whatever URL it was stored for."""
         if not isinstance(raw_domain, str):
             raise InvalidCache
         domain = domain_of(raw_domain)
@@ -35,16 +36,17 @@ class CacheService:
         return self.repository.update(
             lambda state: self._public(state.with_invalidation(domain, day)))
 
-    def lookup(self, domain):
-        """The cached verdict for the domain if it is still within its TTL, else None."""
+    def lookup(self, key):
+        """The entry cached under the key (the hash of a normalized URL) if it
+        is still within the TTL of its class, else None."""
         state = self.repository.read()
-        entry = state.entries.get(domain)
+        entry = state.entries.get(key)
         return entry if entry is not None and state.is_fresh(entry, self.clock()) else None
 
-    def store(self, domain, status, score):
+    def store(self, key, domain, verdict, score):
         now = self.clock()
-        entry = CachedVerdict(status, score, now)
-        self.repository.update(lambda state: (state.with_entry(domain, entry, now), None))
+        entry = CachedVerdict(domain, verdict, score, now)
+        self.repository.update(lambda state: (state.with_entry(key, entry, now), None))
 
     @staticmethod
     def _public(state):

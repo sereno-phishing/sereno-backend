@@ -37,8 +37,8 @@ class HistoryService:
         return "h-" + _base36(millis) + suffix
 
     def record(self, username, verdict):
-        record = HistoryRecord(self.id_factory(), verdict["domain"], verdict["status"],
-                               verdict["score"], verdict["source"],
+        record = HistoryRecord(self.id_factory(), verdict["domain"], verdict["verdict"],
+                               verdict["policy"], verdict["score"], verdict["source"],
                                self.clock().strftime(STAMP_FORMAT), verdict["latencyMs"])
         self.repository.append(username, record)
 

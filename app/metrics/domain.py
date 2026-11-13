@@ -19,8 +19,10 @@ DAYS = 7
 # 32.4 px of the 36 px sparkline strip.
 HOURLY_MAX_HEIGHT = 99.0
 SPARKLINE_MAX_HEIGHT = 32.4
-STATUSES = ("seguro", "advertencia", "bloqueo")  # ascending severity
-PHISHING = frozenset({"advertencia", "bloqueo"})
+STATUSES = ("seguro", "advertencia", "bloqueo")  # dashboard levels, ascending severity
+PHISHING = "phishing"
+VERDICTS = frozenset({PHISHING, "legitima"})
+POLICIES = frozenset({"advertencia", "bloqueo"})
 SOURCE_LABELS = {"cache": "Caché", "modelo": "Modelo"}
 
 
@@ -35,16 +37,24 @@ class QueryLogStorageError(Exception):
 @dataclass(frozen=True)
 class QueryEvent:
     domain: str
-    status: str
+    verdict: str  # the model class
+    policy: str  # the domain policy in force when the verdict was served
     source: str
     latencyMs: int
     at: datetime
 
     def __post_init__(self):
-        if (not isinstance(self.domain, str) or self.status not in STATUSES
+        if (not isinstance(self.domain, str) or self.verdict not in VERDICTS
+                or self.policy not in POLICIES
                 or self.source not in SOURCE_LABELS or type(self.latencyMs) is not int
                 or not isinstance(self.at, datetime) or self.at.tzinfo is None):
             raise InvalidQueryEvent
+
+    @property
+    def status(self):
+        """The dashboard level: a legitimate site is "seguro", a phishing one
+        takes the response its domain policy gave it."""
+        return self.policy if self.verdict == PHISHING else "seguro"
 
 
 def _within(events, start, end):
@@ -64,7 +74,7 @@ def _cache_hits(events):
 
 
 def _phishing(events):
-    return sum(1 for item in events if item.status in PHISHING)
+    return sum(1 for item in events if item.verdict == PHISHING)
 
 
 def _scale(values, maximum_height, digits):

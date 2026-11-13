@@ -223,3 +223,14 @@ def test_policy_domain_defaults_only_when_explicitly_requested():
         "example.com", "advertencia", "2026-10-27")
     with pytest.raises(InvalidPolicy):
         PolicyRow.create("example.com", None, "2026-10-27")
+
+
+def test_policy_for_a_domain_is_its_row_or_the_default(tmp_path):
+    service = PolicyService(JsonPolicyRepository(tmp_path / "policies.json"))
+    assert service.policy_for("shop.pe") == "advertencia"
+    service.replace((PolicyRow("shop.pe", "bloqueo", "2026-11-13"),
+                     PolicyRow("www.bank.pe", "bloqueo", "2026-11-13")))
+    assert service.policy_for("shop.pe") == "bloqueo"
+    # Verdict domains carry no leading "www."; a row typed with it still applies.
+    assert service.policy_for("bank.pe") == "bloqueo"
+    assert service.policy_for("other.pe") == "advertencia"

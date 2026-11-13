@@ -51,7 +51,7 @@ def create_app(config=None, clock=None, classifier=None):
         app.config["DATA_FILE"], app.config.get("QUERY_LOG_DATA_FILE"))), *clocked)
     classifier = classifier or FakeClassifier()
     verdict_service = VerdictService(cache_service, classifier, history_service,
-                                     query_log=metrics_service)
+                                     query_log=metrics_service, policies=policy_service)
     app.register_blueprint(auth_routes(auth_service))
     app.register_blueprint(policy_routes(auth_service, policy_service))
     app.register_blueprint(survey_routes(auth_service, survey_service))

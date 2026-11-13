@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from app import create_app
-from app.metrics.domain import CAPACITY, QueryEvent, compute_metrics
+from app.metrics.domain import CAPACITY, InvalidQueryEvent, QueryEvent, compute_metrics
 from app.metrics.json_repository import JsonQueryLogRepository
 from app.metrics.service import MetricsService
 
@@ -17,7 +17,39 @@ SEED_KEYS = {"analyzed", "deltaPct", "phishingPct", "phishingCount", "latencyMs"
 
 
 def event(hours_ago, status="seguro", source="modelo", latency=100, domain="shop.pe"):
-    return QueryEvent(domain, status, source, latency, NOW - timedelta(hours=hours_ago))
+    """status is the dashboard level the stored verdict + policy must produce."""
+    verdict = "legitima" if status == "seguro" else "phishing"
+    policy = "advertencia" if status == "seguro" else status
+    return QueryEvent(domain, verdict, policy, source, latency, NOW - timedelta(hours=hours_ago))
+
+
+@pytest.mark.parametrize("verdict, policy, status", [
+    ("legitima", "advertencia", "seguro"), ("legitima", "bloqueo", "seguro"),
+    ("phishing", "advertencia", "advertencia"), ("phishing", "bloqueo", "bloqueo")])
+def test_dashboard_status_is_derived_from_verdict_and_policy(verdict, policy, status):
+    stored = QueryEvent("shop.pe", verdict, policy, "modelo", 100, NOW)
+    metrics = compute_metrics([stored], NOW)
+    assert metrics["queries"][0]["status"] == status
+    assert metrics["hourly"][-1]["level"] == status
+    assert metrics["phishingCount"] == (0 if status == "seguro" else 1)
+
+
+@pytest.mark.parametrize("verdict, policy", [("seguro", "advertencia"), ("phishing", "seguro"),
+                                             ("phishing", None)])
+def test_query_event_rejects_values_outside_the_two_classes_and_policies(verdict, policy):
+    with pytest.raises(InvalidQueryEvent):
+        QueryEvent("shop.pe", verdict, policy, "modelo", 100, NOW)
+
+
+def test_query_log_written_with_the_three_state_status_stays_readable(tmp_path):
+    path = tmp_path / "queries.json"
+    path.write_text(json.dumps({"queries": [
+        {"domain": "a.pe", "status": status, "source": "modelo", "latencyMs": 7,
+         "at": NOW.isoformat()} for status in ("seguro", "advertencia", "bloqueo")]}),
+        encoding="utf-8")
+    events = JsonQueryLogRepository(path).list()
+    assert [(item.verdict, item.policy) for item in events] == [
+        ("legitima", "advertencia"), ("phishing", "advertencia"), ("phishing", "bloqueo")]
 
 
 def test_empty_log_gives_zeroed_dashboard_shape():

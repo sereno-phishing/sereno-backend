@@ -36,8 +36,10 @@ def test_history_lists_own_entries_newest_first_and_clears(config):
     entries = alice.get("/v1/history").get_json()["entries"]
     assert [entry["domain"] for entry in entries] == ["pago-servicios-linea.net",
                                                       "tienda-servicios.pe"]
-    assert set(entries[0]) == {"id", "domain", "status", "score", "source", "ts", "latencyMs"}
-    assert entries[0]["status"] == "bloqueo" and entries[0]["source"] == "modelo"
+    assert set(entries[0]) == {"id", "domain", "verdict", "policy", "score", "source", "ts",
+                               "latencyMs"}
+    assert (entries[0]["verdict"], entries[0]["policy"]) == ("phishing", "advertencia")
+    assert entries[0]["source"] == "modelo" and entries[1]["verdict"] == "legitima"
 
     assert alice.delete("/v1/history").get_json() == {}
     assert alice.get("/v1/history").get_json() == {"entries": []}

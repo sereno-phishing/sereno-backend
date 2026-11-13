@@ -1,22 +1,25 @@
 from datetime import datetime
 
 from ..json_file import JsonFile
+from ..legacy import upgrade
 from .domain import CAPACITY, InvalidQueryEvent, QueryEvent, QueryLogStorageError
 
 
-FIELDS = {"domain", "status", "source", "latencyMs", "at"}
+FIELDS = {"domain", "verdict", "policy", "source", "latencyMs", "at"}
 
 
-def _event(record):
+def _event(stored):
+    """A stored event, accepting the three-state shape written before the two-class model."""
+    record = upgrade(stored)
     if not isinstance(record, dict) or set(record) != FIELDS or not isinstance(record["at"], str):
         raise InvalidQueryEvent
-    return QueryEvent(record["domain"], record["status"], record["source"], record["latencyMs"],
-                      datetime.fromisoformat(record["at"]))
+    return QueryEvent(record["domain"], record["verdict"], record["policy"], record["source"],
+                      record["latencyMs"], datetime.fromisoformat(record["at"]))
 
 
 def _record(event):
-    return {"domain": event.domain, "status": event.status, "source": event.source,
-            "latencyMs": event.latencyMs, "at": event.at.isoformat()}
+    return {"domain": event.domain, "verdict": event.verdict, "policy": event.policy,
+            "source": event.source, "latencyMs": event.latencyMs, "at": event.at.isoformat()}
 
 
 def _validate(data):

@@ -7,9 +7,10 @@ from datetime import datetime
 DEDUPE_WINDOW_SECONDS = 60
 CAPACITY = 200
 STAMP_FORMAT = "%Y-%m-%dT%H:%M"
-STATUSES = frozenset({"seguro", "advertencia", "bloqueo"})
+VERDICTS = frozenset({"phishing", "legitima"})
+POLICIES = frozenset({"advertencia", "bloqueo"})
 SOURCES = frozenset({"cache", "modelo"})
-FIELDS = ("id", "domain", "status", "score", "source", "ts", "latencyMs")
+FIELDS = ("id", "domain", "verdict", "policy", "score", "source", "ts", "latencyMs")
 
 
 class InvalidHistory(Exception):
@@ -31,7 +32,8 @@ def parse_stamp(value):
 class HistoryRecord:
     id: str
     domain: str
-    status: str
+    verdict: str  # the model class
+    policy: str  # the domain policy in force when the verdict was served
     score: float
     source: str
     ts: str
@@ -39,7 +41,8 @@ class HistoryRecord:
 
     def __post_init__(self):
         if (not isinstance(self.id, str) or not self.id or not isinstance(self.domain, str)
-                or self.status not in STATUSES or self.source not in SOURCES
+                or self.verdict not in VERDICTS or self.policy not in POLICIES
+                or self.source not in SOURCES
                 or type(self.score) not in (int, float) or parse_stamp(self.ts) is None
                 or not (self.latencyMs is None or type(self.latencyMs) is int)):
             raise InvalidHistory
@@ -55,7 +58,8 @@ class HistoryRecord:
 
 
 def _duplicate(candidate, record):
-    if candidate.domain != record.domain or candidate.status != record.status:
+    if (candidate.domain, candidate.verdict, candidate.policy) != (
+            record.domain, record.verdict, record.policy):
         return False
     delta = parse_stamp(candidate.ts) - parse_stamp(record.ts)
     return abs(delta.total_seconds()) <= DEDUPE_WINDOW_SECONDS

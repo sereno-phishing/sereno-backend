@@ -1,6 +1,8 @@
 """Verdict cache: TTL settings, manual invalidations and cached verdicts.
 
-Mirrors the extension's administration/domain/verdict-cache.js and the mock
+Entries are keyed by the hash of the normalized URL and keep the model class
+with the domain, never the URL. Settings and invalidations mirror the
+extension's administration/domain/verdict-cache.js; domain_of mirrors the mock
 backend's domainOf (platform/providers/mock.js)."""
 import re
 from dataclasses import dataclass, field, replace
@@ -8,8 +10,8 @@ from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 
-VERDICTS = ("seguro", "advertencia", "bloqueo")
-PHISHING = frozenset({"advertencia", "bloqueo"})
+PHISHING = "phishing"
+VERDICTS = (PHISHING, "legitima")  # the two classes of the model
 DEFAULT_TTL_PHISHING_DAYS = 7
 DEFAULT_TTL_LEGIT_HOURS = 24
 MAX_TTL_PHISHING_DAYS = 3650
@@ -63,12 +65,14 @@ class Invalidation:
 
 @dataclass(frozen=True)
 class CachedVerdict:
-    status: str
+    domain: str
+    verdict: str
     score: float
     cachedAt: datetime
 
     def __post_init__(self):
-        if (self.status not in VERDICTS or type(self.score) not in (int, float)
+        if (not isinstance(self.domain, str) or not self.domain
+                or self.verdict not in VERDICTS or type(self.score) not in (int, float)
                 or not isinstance(self.cachedAt, datetime) or self.cachedAt.tzinfo is None):
             raise InvalidCache
 
@@ -94,27 +98,29 @@ class CacheState:
         return {"ttlPhishingDays": self.ttlPhishingDays, "ttlLegitHours": self.ttlLegitHours,
                 "invalidations": [item.public() for item in self.invalidations]}
 
-    def ttl_for(self, status):
-        if status in PHISHING:
+    def ttl_for(self, verdict):
+        if verdict == PHISHING:
             return timedelta(days=self.ttlPhishingDays)
         return timedelta(hours=self.ttlLegitHours)
 
     def is_fresh(self, entry, now):
-        return now - entry.cachedAt < self.ttl_for(entry.status)
+        return now - entry.cachedAt < self.ttl_for(entry.verdict)
 
     def with_ttl(self, days, hours):
         return replace(self, ttlPhishingDays=days, ttlLegitHours=hours)
 
     def with_invalidation(self, domain, day):
-        entries = {key: value for key, value in self.entries.items() if key != domain}
+        """Drops every entry of the domain: several URLs may share it."""
+        entries = {key: value for key, value in self.entries.items() if value.domain != domain}
         invalidation = Invalidation(domain, PENDING_REEVALUATION, day)
         return replace(self, invalidations=(invalidation, *self.invalidations), entries=entries)
 
-    def with_entry(self, domain, entry, now):
-        entries = {key: value for key, value in self.entries.items() if self.is_fresh(value, now)}
-        entries[domain] = entry
+    def with_entry(self, key, entry, now):
+        entries = {name: value for name, value in self.entries.items()
+                   if self.is_fresh(value, now)}
+        entries[key] = entry
         invalidations = tuple(
-            Invalidation(item.domain, REEVALUATED + entry.status, item.date)
-            if item.domain == domain and item.status == PENDING_REEVALUATION else item
+            Invalidation(item.domain, REEVALUATED + entry.verdict, item.date)
+            if item.domain == entry.domain and item.status == PENDING_REEVALUATION else item
             for item in self.invalidations)
         return replace(self, invalidations=invalidations, entries=entries)

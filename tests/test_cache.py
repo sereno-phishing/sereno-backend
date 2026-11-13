@@ -84,48 +84,60 @@ def test_ttl_is_validated_and_persisted(repository):
     assert service.view()["ttlPhishingDays"] == 3
 
 
-def test_entries_expire_by_status_ttl(repository):
+def test_entries_expire_by_class_ttl(repository):
     clock = Clock()
     service = CacheService(repository, clock)
-    service.store("safe.pe", "seguro", 0.05)
-    service.store("bad.net", "bloqueo", 0.97)
-    assert service.lookup("safe.pe").score == 0.05
+    service.store("key-safe", "safe.pe", "legitima", 0.05)
+    service.store("key-bad", "bad.net", "phishing", 0.97)
+    assert service.lookup("key-safe").score == 0.05
     clock.advance(hours=23, minutes=59)
-    assert service.lookup("safe.pe") is not None
+    assert service.lookup("key-safe") is not None
     clock.advance(minutes=1)
-    assert service.lookup("safe.pe") is None
-    assert service.lookup("bad.net").status == "bloqueo"
+    assert service.lookup("key-safe") is None
+    found = service.lookup("key-bad")
+    assert (found.domain, found.verdict) == ("bad.net", "phishing")
     clock.advance(days=6, minutes=1)
-    assert service.lookup("bad.net") is None
+    assert service.lookup("key-bad") is None
 
 
 def test_shorter_ttl_applies_to_existing_entries(repository):
     clock = Clock()
     service = CacheService(repository, clock)
-    service.store("safe.pe", "seguro", 0.05)
+    service.store("key-safe", "safe.pe", "legitima", 0.05)
     clock.advance(hours=2)
     service.set_ttl(7, 1)
-    assert service.lookup("safe.pe") is None
+    assert service.lookup("key-safe") is None
 
 
-def test_invalidation_drops_entry_and_is_listed_first(repository):
+def test_invalidation_drops_every_entry_of_the_domain_and_is_listed_first(repository):
     clock = Clock()
     service = CacheService(repository, clock)
-    service.store("bad.net", "bloqueo", 0.97)
+    service.store("key-bad-1", "bad.net", "phishing", 0.97)
+    service.store("key-bad-2", "bad.net", "legitima", 0.2)
+    service.store("key-other", "good.pe", "legitima", 0.1)
     service.invalidate("other.pe")
     view = service.invalidate(" https://www.Bad.net/x ")
     assert view["invalidations"][0] == {
         "domain": "bad.net", "status": "Se reevaluará en la próxima consulta",
         "date": "2026-10-31"}
     assert view["invalidations"][1]["domain"] == "other.pe"
-    assert service.lookup("bad.net") is None
+    assert service.lookup("key-bad-1") is None and service.lookup("key-bad-2") is None
+    assert service.lookup("key-other") is not None
 
 
 def test_storing_a_new_verdict_marks_pending_invalidations_reevaluated(repository):
     service = CacheService(repository, Clock())
     service.invalidate("bad.net")
-    service.store("bad.net", "advertencia", 0.9)
-    assert service.view()["invalidations"][0]["status"] == "Reevaluado: advertencia"
+    service.store("key-bad", "bad.net", "phishing", 0.9)
+    assert service.view()["invalidations"][0]["status"] == "Reevaluado: phishing"
+
+
+@pytest.mark.parametrize("verdict", ["seguro", "advertencia", "bloqueo", "", None])
+def test_only_the_two_model_classes_are_cached(repository, verdict):
+    service = CacheService(repository, Clock())
+    with pytest.raises(InvalidCache):
+        service.store("key", "shop.pe", verdict, 0.5)
+    assert service.lookup("key") is None
 
 
 @pytest.mark.parametrize("domain", ["", "   ", None, 5, "bad domain.pe", "a" * 254])
@@ -138,14 +150,30 @@ def test_json_repository_survives_recreation_and_fails_closed(tmp_path):
     path = tmp_path / "cache.json"
     service = CacheService(JsonCacheRepository(path), Clock())
     service.set_ttl(2, 3)
-    service.store("safe.pe", "seguro", 0.04)
+    service.store("key-safe", "safe.pe", "legitima", 0.04)
     recreated = CacheService(JsonCacheRepository(path), Clock())
     assert recreated.view()["ttlPhishingDays"] == 2
-    assert recreated.lookup("safe.pe").score == 0.04
+    assert recreated.lookup("key-safe").score == 0.04
     path.write_text("{broken", encoding="utf-8")
     with pytest.raises(CacheStorageError):
         JsonCacheRepository(path)
     assert path.read_text(encoding="utf-8") == "{broken"
+
+
+def test_entries_cached_by_domain_with_a_three_state_status_are_dropped_on_read(tmp_path):
+    path = tmp_path / "cache.json"
+    path.write_text(json.dumps({
+        "ttlPhishingDays": 3, "ttlLegitHours": 24,
+        "invalidations": [{"domain": "bad.net", "status": "Reevaluado: bloqueo",
+                           "date": "2026-10-30"}],
+        "entries": {"example.com": {"status": "seguro", "score": 0.05,
+                                    "cachedAt": START.isoformat()}}}), encoding="utf-8")
+    repository = JsonCacheRepository(path)
+    state = repository.read()
+    assert state.entries == {} and state.ttlPhishingDays == 3
+    assert state.invalidations[0].status == "Reevaluado: bloqueo"
+    CacheService(repository, Clock()).store("key-safe", "safe.pe", "legitima", 0.04)
+    assert set(json.loads(path.read_text(encoding="utf-8"))["entries"]) == {"key-safe"}
 
 
 # HTTP

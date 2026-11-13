@@ -1,5 +1,11 @@
 from ..json_file import JsonFile
+from ..legacy import upgrade
 from .domain import CAPACITY, HistoryRecord, HistoryStorageError, append
+
+
+def _record(stored):
+    """A stored record, accepting the three-state shape written before the two-class model."""
+    return HistoryRecord.from_public(upgrade(stored))
 
 
 def _validate(data):
@@ -13,7 +19,7 @@ def _validate(data):
         if len(records) > CAPACITY:
             raise ValueError("Too many records")
         for record in records:
-            HistoryRecord.from_public(record)
+            _record(record)
 
 
 class JsonHistoryRepository:
@@ -31,11 +37,11 @@ class JsonHistoryRepository:
         self._valid_username(username)
         with self.file.lock:
             records = self.file.read()["history"].get(username, [])
-            return tuple(HistoryRecord.from_public(record) for record in records)
+            return tuple(_record(record) for record in records)
 
     def all(self):
         with self.file.lock:
-            return {username: tuple(HistoryRecord.from_public(record) for record in records)
+            return {username: tuple(_record(record) for record in records)
                     for username, records in self.file.read()["history"].items()}
 
     def append(self, username, record):
@@ -44,8 +50,7 @@ class JsonHistoryRepository:
             raise HistoryStorageError("Invalid record")
 
         def change(data):
-            current = tuple(HistoryRecord.from_public(item)
-                            for item in data["history"].get(username, []))
+            current = tuple(_record(item) for item in data["history"].get(username, []))
             data["history"][username] = [item.public() for item in append(current, record)]
             return data, None
         self.file.update(change)

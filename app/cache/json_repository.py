@@ -5,6 +5,10 @@ from .domain import CachedVerdict, CacheState, CacheStorageError, InvalidCache, 
 
 
 KEYS = {"ttlPhishingDays", "ttlLegitHours", "invalidations", "entries"}
+ENTRY_KEYS = {"domain", "verdict", "score", "cachedAt"}
+# Entries written before the two-class model: keyed by domain with a
+# three-state status. They cannot be re-keyed by URL, so they are dropped.
+LEGACY_ENTRY_KEYS = {"status", "score", "cachedAt"}
 
 
 def _state(data):
@@ -19,12 +23,14 @@ def _state(data):
             raise InvalidCache
         invalidations.append(Invalidation(record["domain"], record["status"], record["date"]))
     entries = {}
-    for domain, record in data["entries"].items():
-        if (not isinstance(record, dict) or set(record) != {"status", "score", "cachedAt"}
+    for key, record in data["entries"].items():
+        if isinstance(record, dict) and set(record) == LEGACY_ENTRY_KEYS:
+            continue
+        if (not isinstance(record, dict) or set(record) != ENTRY_KEYS
                 or not isinstance(record["cachedAt"], str)):
             raise InvalidCache
-        entries[domain] = CachedVerdict(record["status"], record["score"],
-                                        datetime.fromisoformat(record["cachedAt"]))
+        entries[key] = CachedVerdict(record["domain"], record["verdict"], record["score"],
+                                     datetime.fromisoformat(record["cachedAt"]))
     return CacheState(data["ttlPhishingDays"], data["ttlLegitHours"],
                       tuple(invalidations), entries)
 
@@ -33,9 +39,9 @@ def _data(state):
     if not isinstance(state, CacheState):
         raise CacheStorageError("Invalid state")
     return {**state.public(), "entries": {
-        domain: {"status": entry.status, "score": entry.score,
-                 "cachedAt": entry.cachedAt.isoformat()}
-        for domain, entry in state.entries.items()}}
+        key: {"domain": entry.domain, "verdict": entry.verdict, "score": entry.score,
+              "cachedAt": entry.cachedAt.isoformat()}
+        for key, entry in state.entries.items()}}
 
 
 class JsonCacheRepository:
