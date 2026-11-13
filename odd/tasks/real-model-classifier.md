@@ -47,7 +47,7 @@ Branch `feat/real-model-classifier` from `48f6909`.
 - Added without being in the task text, so the local `data/` files keep working: history and query-log records with the former three-state `status` are upgraded on read; cache entries keyed by domain are dropped on read.
 - A policy store failure during a verdict answers with the default policy and logs a warning instead of failing the verdict.
 
-### T2 (route: delegated writer)
+### T2 (route: delegated writer) — commit `aae046a`
 - RED: `pytest -q tests/test_model_classifier.py` -> collection error (`cannot import name 'model_path' from 'app.config'`; no `app.verdict.model_classifier`).
 - GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 371 passed, the real-artifact integration test included (not skipped).
 - Installed into `.venv`: `requirements-model.txt` (resolved to the same versions as `../sereno-model/requirements.txt`, transitive ones included) and `pip install --no-deps -e ../sereno-model`. `pyarrow` is required: `sereno_model.models.stacking` imports `sereno_model.data.split`, which imports it.
