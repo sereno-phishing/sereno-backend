@@ -31,7 +31,7 @@ English technical artifacts. Test first (pytest), RED before GREEN. Conventional
 ## Work units
 - [x] T1 Two-class port and pipeline: `Classification(verdict, score)`, URL validation and normalized-URL cache key, policy lookup in the response, history, cache and metrics on `verdict` + `policy`. Route: delegated (multi-file write).
 - [x] T2 `ModelClassifier` adapter: lazy `joblib.load`, `CLASSIFIER` (`model` | `fake`) and `MODEL_PATH` settings, model dependencies, `start.ps1` and README. Route: delegated.
-- [ ] T3 Local end-to-end check with the real artifact over HTTP. Route: parent spot check.
+- [x] T3 Local end-to-end check with the real artifact over HTTP. Route: parent spot check.
 
 ## Checks
 `.venv/Scripts/python.exe -m pytest -q` (319 passed before this work).
@@ -62,5 +62,7 @@ Branch `feat/real-model-classifier` from `48f6909`.
 - `node --test tests/verdict-local-http.test.js` from `../sereno-extension` -> 1 passed, 0 failed.
 - Commit `923bba2`. One of several full-suite runs around it failed on `tests/test_metrics.py::test_metrics_reflect_every_verdict_including_anonymous` (`['Modelo', 'Modelo', 'Caché']`): a flake that predates this work, the queries table ordered events sharing a clock instant arbitrarily. Fixed in the next commit with a deterministic test (RED: 2 failed in `tests/test_metrics.py`; GREEN: 373 passed, five consecutive full runs).
 
+T3 (parent, 2026-11-13, at `935f984`): `pytest -q` 373 passed; `node --test` in `sereno-extension` 523 passed, including `tests/verdict-local-http.test.js` against this backend. Real model over HTTP (`CLASSIFIER=model`, scratch data files, port 5057): `GET /v1/model` -> `2.0.0`; legitimate and phishing verdicts from `modelo` in 23-92 ms once loaded; a repeated URL from `cache` in 12 ms; `shop.pe` -> 400; the cache file holds SHA-256 keys and domains, no URL. Observed: `https://www.mercadolibre.com.pe/ofertas` scores 0.92 (phishing), a false positive of model 2.0.0. Open: the first request pays the model load (2 s warm, about 13.5 s cold) and the extension times out at 4 s.
+
 ## Next step
-T3: parent end-to-end check with the extension against `.\start.ps1`. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.
+Manual check in Chrome by Andres against `.\start.ps1`; decide whether to warm the model at startup. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.
