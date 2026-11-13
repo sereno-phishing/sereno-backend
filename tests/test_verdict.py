@@ -150,7 +150,8 @@ def test_expired_or_invalidated_entry_is_reclassified():
     assert service.evaluate("https://shop.pe", None)["source"] == "modelo"
     cache.invalidate("shop.pe")
     assert service.evaluate("https://shop.pe", None)["source"] == "modelo"
-    assert cache.view()["invalidations"][0]["status"] == "Reevaluado: legitima"
+    assert cache.view()["invalidations"][0] == {"domain": "shop.pe", "date": "2026-11-01",
+                                                "verdict": "legitima"}
     assert len(classifier.calls) == 3
 
 

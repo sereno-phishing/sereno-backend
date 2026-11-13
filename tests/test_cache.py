@@ -117,19 +117,38 @@ def test_invalidation_drops_every_entry_of_the_domain_and_is_listed_first(reposi
     service.store("key-other", "good.pe", "legitima", 0.1)
     service.invalidate("other.pe")
     view = service.invalidate(" https://www.Bad.net/x ")
-    assert view["invalidations"][0] == {
-        "domain": "bad.net", "status": "Se reevaluará en la próxima consulta",
-        "date": "2026-10-31"}
+    assert view["invalidations"][0] == {"domain": "bad.net", "date": "2026-10-31",
+                                        "verdict": None}
     assert view["invalidations"][1]["domain"] == "other.pe"
     assert service.lookup("key-bad-1") is None and service.lookup("key-bad-2") is None
     assert service.lookup("key-other") is not None
 
 
-def test_storing_a_new_verdict_marks_pending_invalidations_reevaluated(repository):
+def test_storing_a_new_verdict_reports_its_class_in_pending_invalidations(repository):
     service = CacheService(repository, Clock())
     service.invalidate("bad.net")
+    service.invalidate("other.pe")
     service.store("key-bad", "bad.net", "phishing", 0.9)
-    assert service.view()["invalidations"][0]["status"] == "Reevaluado: phishing"
+    assert service.view()["invalidations"] == [
+        {"domain": "other.pe", "date": "2026-10-31", "verdict": None},
+        {"domain": "bad.net", "date": "2026-10-31", "verdict": "phishing"}]
+    # Only the first re-evaluation after the invalidation is reported.
+    service.store("key-bad-2", "bad.net", "legitima", 0.1)
+    assert service.view()["invalidations"][1]["verdict"] == "phishing"
+
+
+def test_invalidation_rows_stored_with_a_status_text_are_upgraded_on_read(tmp_path):
+    path = tmp_path / "cache.json"
+    texts = ["Se reevaluará en la próxima consulta", "Reevaluado: legitima",
+             "Reevaluado: phishing", "Reevaluado: seguro", "Reevaluado: bloqueo", "otro"]
+    path.write_text(json.dumps({
+        "ttlPhishingDays": 7, "ttlLegitHours": 24, "entries": {},
+        "invalidations": [{"domain": f"d{index}.pe", "status": text, "date": "2026-10-30"}
+                          for index, text in enumerate(texts)]}), encoding="utf-8")
+    view = CacheService(JsonCacheRepository(path), Clock()).view()
+    assert [row["verdict"] for row in view["invalidations"]] == [
+        None, "legitima", "phishing", "legitima", "phishing", None]
+    assert all(set(row) == {"domain", "date", "verdict"} for row in view["invalidations"])
 
 
 @pytest.mark.parametrize("verdict", ["seguro", "advertencia", "bloqueo", "", None])
@@ -171,7 +190,7 @@ def test_entries_cached_by_domain_with_a_three_state_status_are_dropped_on_read(
     repository = JsonCacheRepository(path)
     state = repository.read()
     assert state.entries == {} and state.ttlPhishingDays == 3
-    assert state.invalidations[0].status == "Reevaluado: bloqueo"
+    assert state.invalidations[0].verdict == "phishing"
     CacheService(repository, Clock()).store("key-safe", "safe.pe", "legitima", 0.04)
     assert set(json.loads(path.read_text(encoding="utf-8"))["entries"]) == {"key-safe"}
 
@@ -208,8 +227,8 @@ def test_admin_reads_updates_and_invalidates_cache(config):
     invalidated = client.post("/v1/cache/invalidations", json={"domain": "Bad.net"})
     assert invalidated.status_code == 200
     entry = invalidated.get_json()["cache"]["invalidations"][0]
-    assert entry["domain"] == "bad.net"
-    assert entry["status"] == "Se reevaluará en la próxima consulta"
+    assert set(entry) == {"domain", "date", "verdict"}
+    assert entry["domain"] == "bad.net" and entry["verdict"] is None
     assert create_app(config).test_client().get("/v1/cache").status_code == 401
 
 

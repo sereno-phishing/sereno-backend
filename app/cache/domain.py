@@ -16,8 +16,6 @@ DEFAULT_TTL_PHISHING_DAYS = 7
 DEFAULT_TTL_LEGIT_HOURS = 24
 MAX_TTL_PHISHING_DAYS = 3650
 MAX_TTL_LEGIT_HOURS = 87600
-PENDING_REEVALUATION = "Se reevaluará en la próxima consulta"
-REEVALUATED = "Reevaluado: "
 _DOMAIN_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z")
 _SCHEME = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*:")
 
@@ -55,12 +53,19 @@ def _positive(value, maximum):
 
 @dataclass(frozen=True)
 class Invalidation:
+    """verdict is None until a URL of the domain is evaluated again, then the
+    class the model gave it. The display text is the extension's concern."""
     domain: str
-    status: str
     date: str
+    verdict: str | None = None
+
+    def __post_init__(self):
+        if (not isinstance(self.domain, str) or not isinstance(self.date, str)
+                or not (self.verdict is None or self.verdict in VERDICTS)):
+            raise InvalidCache
 
     def public(self):
-        return {"domain": self.domain, "status": self.status, "date": self.date}
+        return {"domain": self.domain, "date": self.date, "verdict": self.verdict}
 
 
 @dataclass(frozen=True)
@@ -112,7 +117,7 @@ class CacheState:
     def with_invalidation(self, domain, day):
         """Drops every entry of the domain: several URLs may share it."""
         entries = {key: value for key, value in self.entries.items() if value.domain != domain}
-        invalidation = Invalidation(domain, PENDING_REEVALUATION, day)
+        invalidation = Invalidation(domain, day)
         return replace(self, invalidations=(invalidation, *self.invalidations), entries=entries)
 
     def with_entry(self, key, entry, now):
@@ -120,7 +125,7 @@ class CacheState:
                    if self.is_fresh(value, now)}
         entries[key] = entry
         invalidations = tuple(
-            Invalidation(item.domain, REEVALUATED + entry.verdict, item.date)
-            if item.domain == entry.domain and item.status == PENDING_REEVALUATION else item
+            replace(item, verdict=entry.verdict)
+            if item.domain == entry.domain and item.verdict is None else item
             for item in self.invalidations)
         return replace(self, invalidations=invalidations, entries=entries)

@@ -55,5 +55,11 @@ Branch `feat/real-model-classifier` from `48f6909`.
 - Run over HTTP (`CLASSIFIER=model`, spare port 5057, scratch `DATA_FILE`): `POST /v1/verdict {"url":"https://www.google.com/"}` -> `{"domain":"google.com","latencyMs":2336,"policy":"advertencia","score":0.0271...,"source":"modelo","verdict":"legitima"}`; a phishing-looking URL -> `verdict: "phishing"`, score 0.9896, 18 ms; the first URL again -> `source: "cache"`, 7 ms; `shop.pe` -> 400; `GET /v1/model` -> `{"version":"2.0.0"}`.
 - Model load: about 13.5 s cold (first import of the ML libraries), about 2 s once the files are in the OS cache. It happens on the first verdict or `/v1/model` request, not at startup.
 
+### Follow-up: invalidation row (parent decision, 2026-11-13)
+- Decision: every invalidation row in the cache responses is `{domain, date, verdict}` with no `status`; `verdict` is `null` until a URL of the domain is evaluated again, then the model class. This replaces the T1 interpretation above; the backend emits no display text.
+- Rows stored with a `status` text are upgraded on read (`"Reevaluado: ..."` to its class, anything else to `null`).
+- RED: `pytest -q tests/test_cache.py tests/test_verdict.py` -> 8 failed, 97 passed. GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 372 passed.
+- `node --test tests/verdict-local-http.test.js` from `../sereno-extension` -> 1 passed, 0 failed.
+
 ## Next step
 T3: parent end-to-end check with the extension against `.\start.ps1`. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.

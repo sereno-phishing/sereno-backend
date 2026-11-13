@@ -9,6 +9,24 @@ ENTRY_KEYS = {"domain", "verdict", "score", "cachedAt"}
 # Entries written before the two-class model: keyed by domain with a
 # three-state status. They cannot be re-keyed by URL, so they are dropped.
 LEGACY_ENTRY_KEYS = {"status", "score", "cachedAt"}
+# Invalidation rows used to carry a display text in `status`. A re-evaluated
+# row maps to its class; the pending text, or any other one, to no verdict yet.
+LEGACY_REEVALUATED = {"Reevaluado: " + text: verdict for text, verdict in (
+    ("phishing", "phishing"), ("legitima", "legitima"), ("seguro", "legitima"),
+    ("advertencia", "phishing"), ("bloqueo", "phishing"))}
+
+
+def _invalidation(record):
+    if not isinstance(record, dict) or any(not isinstance(key, str) for key in record):
+        raise InvalidCache
+    if set(record) == {"domain", "status", "date"}:
+        if not isinstance(record["status"], str):
+            raise InvalidCache
+        return Invalidation(record["domain"], record["date"],
+                            LEGACY_REEVALUATED.get(record["status"]))
+    if set(record) != {"domain", "date", "verdict"}:
+        raise InvalidCache
+    return Invalidation(record["domain"], record["date"], record["verdict"])
 
 
 def _state(data):
@@ -16,12 +34,7 @@ def _state(data):
         raise InvalidCache
     if not isinstance(data["invalidations"], list) or not isinstance(data["entries"], dict):
         raise InvalidCache
-    invalidations = []
-    for record in data["invalidations"]:
-        if (not isinstance(record, dict) or set(record) != {"domain", "status", "date"}
-                or any(not isinstance(value, str) for value in record.values())):
-            raise InvalidCache
-        invalidations.append(Invalidation(record["domain"], record["status"], record["date"]))
+    invalidations = [_invalidation(record) for record in data["invalidations"]]
     entries = {}
     for key, record in data["entries"].items():
         if isinstance(record, dict) and set(record) == LEGACY_ENTRY_KEYS:
