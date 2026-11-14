@@ -1,25 +1,12 @@
 import json
-from pathlib import Path
 
 import pytest
 
 from app import create_app
 from app.policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
-from app.policy.json_repository import JsonPolicyRepository
+from app.policy.postgres_repository import PostgresPolicyRepository
 from app.policy.service import PolicyService
-
-
-@pytest.fixture
-def config(tmp_path):
-    return {
-        "TESTING": True,
-        "DATA_FILE": str(tmp_path / "auth.json"),
-        "POLICY_DATA_FILE": str(tmp_path / "policies.json"),
-    }
-
-
-def policy_path(config):
-    return Path(config["POLICY_DATA_FILE"])
+from conftest import rows, set_role
 
 
 def register(client, username="alice", **extra):
@@ -28,13 +15,6 @@ def register(client, username="alice", **extra):
         "password": "throwaway",
         **extra,
     })
-
-
-def set_role(config, username, role):
-    path = Path(config["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"][username]["role"] = role
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def make_admin(client, config, username="alice"):
@@ -47,28 +27,28 @@ def make_admin(client, config, username="alice"):
 @pytest.mark.parametrize("method", ["get", "put"])
 def test_domain_policies_require_a_valid_session(config, method):
     client = create_app(config).test_client()
-    before = policy_path(config).read_bytes()
+    before = rows(config, "politica_dominio")
     kwargs = {"json": {"domains": []}} if method == "put" else {}
 
     response = getattr(client, method)("/v1/domains", **kwargs)
 
     assert response.status_code == 401
     assert response.get_json() == {"error": "invalid"}
-    assert policy_path(config).read_bytes() == before
+    assert rows(config, "politica_dominio") == before
 
 
 @pytest.mark.parametrize("method", ["get", "put"])
 def test_domain_policies_forbid_nonadministrators(config, method):
     client = create_app(config).test_client()
     assert register(client).status_code == 201
-    before = policy_path(config).read_bytes()
+    before = rows(config, "politica_dominio")
     kwargs = {"json": {"domains": []}} if method == "put" else {}
 
     response = getattr(client, method)("/v1/domains", **kwargs)
 
     assert response.status_code == 403
     assert response.get_json() == {"error": "forbidden"}
-    assert policy_path(config).read_bytes() == before
+    assert rows(config, "politica_dominio") == before
 
 
 def test_existing_session_observes_manual_promotion_and_demotion(config):
@@ -116,7 +96,7 @@ def test_administrator_replaces_whole_policy_list_and_recreation_persists(config
         {"domain": "new.example", "policy": "advertencia", "updatedAt": "2026-10-29"},
     ]}
     assert recreated.put("/v1/domains", json=replacement).get_json() == replacement
-    assert json.loads(policy_path(config).read_text(encoding="utf-8")) == replacement
+    assert recreated.get("/v1/domains").get_json() == replacement
 
 
 @pytest.mark.parametrize("payload", [
@@ -142,80 +122,20 @@ def test_administrator_replaces_whole_policy_list_and_recreation_persists(config
         {"domain": " example.COM ", "policy": "bloqueo", "updatedAt": "2026-10-28"},
     ]},
 ])
-def test_invalid_policy_payload_leaves_persisted_bytes_unchanged(config, payload):
+def test_invalid_policy_payload_leaves_the_stored_list_unchanged(config, payload):
     client = create_app(config).test_client()
     make_admin(client, config)
     valid = {"domains": [
         {"domain": "kept.example", "policy": "advertencia", "updatedAt": "2026-10-27"},
     ]}
     assert client.put("/v1/domains", json=valid).status_code == 200
-    before = policy_path(config).read_bytes()
+    before = rows(config, "politica_dominio")
 
     response = client.put("/v1/domains", data=json.dumps(payload), content_type="application/json")
 
     assert response.status_code == 400
     assert response.get_json() == {"error": "invalid"}
-    assert policy_path(config).read_bytes() == before
-
-
-@pytest.mark.parametrize("content", [
-    "broken",
-    "[]",
-    "{}",
-    '{"domains": {}}',
-    '{"domains": [{"domain":"example.com","policy":"permitir","updatedAt":"2026-10-27"}]}',
-    '{"domains": [{"domain":"Example.com","policy":"advertencia","updatedAt":"2026-10-27"}]}',
-    '{"domains": [{"domain":"example.com","policy":"advertencia","updatedAt":"not-a-date"}]}',
-])
-def test_corrupt_existing_policy_data_is_rejected_and_preserved(tmp_path, content):
-    path = tmp_path / "policies.json"
-    path.write_text(content, encoding="utf-8")
-
-    with pytest.raises(PolicyStorageError, match="Storage unavailable"):
-        JsonPolicyRepository(path)
-
-    assert path.read_text(encoding="utf-8") == content
-
-
-def test_policy_storage_failure_is_controlled_and_preserves_bytes(config):
-    client = create_app(config).test_client()
-    make_admin(client, config)
-    path = policy_path(config)
-    path.write_text("corrupt /private/location", encoding="utf-8")
-
-    for method, kwargs in ((client.get, {}), (client.put, {"json": {"domains": []}})):
-        response = method("/v1/domains", **kwargs)
-        assert response.status_code == 500
-        assert response.get_json() == {"error": "server"}
-        assert "/private/location" not in response.get_data(as_text=True)
-        assert path.read_text(encoding="utf-8") == "corrupt /private/location"
-
-
-def test_failed_atomic_policy_replace_keeps_original_and_cleans_temporary(tmp_path, monkeypatch):
-    import app.policy.json_repository as adapter
-
-    path = tmp_path / "policies.json"
-    repository = JsonPolicyRepository(path)
-    service = PolicyService(repository)
-    before = path.read_bytes()
-
-    def fail(*args):
-        raise OSError("private path")
-
-    monkeypatch.setattr(adapter.os, "replace", fail)
-    with pytest.raises(PolicyStorageError, match="Storage unavailable"):
-        service.replace((PolicyRow("example.com", "bloqueo", "2026-10-27"),))
-    assert path.read_bytes() == before
-    assert list(tmp_path.iterdir()) == [path]
-
-
-def test_policy_path_resolves_against_backend_root_or_auth_file(tmp_path, monkeypatch):
-    from app.config import BACKEND_ROOT, policy_data_path
-
-    auth_path = tmp_path / "nested" / "auth.json"
-    monkeypatch.chdir(tmp_path)
-    assert policy_data_path(auth_path) == auth_path.resolve().with_name("policies.json")
-    assert policy_data_path(auth_path, "custom/policies.json") == BACKEND_ROOT / "custom/policies.json"
+    assert rows(config, "politica_dominio") == before
 
 
 def test_policy_domain_defaults_only_when_explicitly_requested():
@@ -225,8 +145,30 @@ def test_policy_domain_defaults_only_when_explicitly_requested():
         PolicyRow.create("example.com", None, "2026-10-27")
 
 
-def test_policy_for_a_domain_is_its_row_or_the_default(tmp_path):
-    service = PolicyService(JsonPolicyRepository(tmp_path / "policies.json"))
+
+
+@pytest.mark.parametrize("operation", ["list", "replace"])
+def test_policy_storage_failure_is_controlled_and_keeps_the_list(config, monkeypatch, operation):
+    def fail(*arguments):
+        raise PolicyStorageError("Storage unavailable: /private/location")
+
+    client = create_app(config).test_client()
+    make_admin(client, config)
+    before = rows(config, "politica_dominio")
+    monkeypatch.setattr(PostgresPolicyRepository, operation, fail)
+
+    method, kwargs = {"list": (client.get, {}),
+                      "replace": (client.put, {"json": {"domains": []}})}[operation]
+    response = method("/v1/domains", **kwargs)
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}
+    assert "/private/location" not in response.get_data(as_text=True)
+    assert rows(config, "politica_dominio") == before
+
+
+def test_policy_for_a_domain_is_its_row_or_the_default(database):
+    service = PolicyService(PostgresPolicyRepository(database))
     assert service.policy_for("shop.pe") == "advertencia"
     service.replace((PolicyRow("shop.pe", "bloqueo", "2026-11-13"),
                      PolicyRow("www.bank.pe", "bloqueo", "2026-11-13")))

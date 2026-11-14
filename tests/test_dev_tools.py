@@ -17,15 +17,13 @@ ROUTES = [("get", "/dev/users"), ("get", "/dev/api/users"),
 
 
 @pytest.fixture
-def config(database, redis_url):
-    """The tool runs on PostgreSQL only (the JSON storage is being retired)."""
-    return {"TESTING": True, "AUTH_LOCAL_HTTP": True, "DEV_TOOLS": True,
-            "STORAGE_DRIVER": "postgres", "DATABASE_URL": database.url, "REDIS_URL": redis_url}
+def disabled(config):
+    return {**config, "DEV_TOOLS": False}
 
 
 @pytest.fixture
-def json_config(tmp_path):
-    return {"TESTING": True, "AUTH_LOCAL_HTTP": True, "DATA_FILE": str(tmp_path / "db.json")}
+def config(config):
+    return {**config, "AUTH_LOCAL_HTTP": True, "DEV_TOOLS": True}
 
 
 class Client:
@@ -62,19 +60,14 @@ def test_dev_tools_require_explicit_environment_opt_in(monkeypatch):
     assert settings()["DEV_TOOLS"] is True
 
 
-def test_dev_tools_setting_must_be_a_boolean(json_config):
+def test_dev_tools_setting_must_be_a_boolean(disabled):
     with pytest.raises(ValueError, match="DEV_TOOLS must be a boolean"):
-        create_app({**json_config, "DEV_TOOLS": "0"})
-
-
-def test_dev_tools_need_the_postgres_driver(json_config):
-    with pytest.raises(ValueError, match="DEV_TOOLS requires STORAGE_DRIVER=postgres"):
-        create_app({**json_config, "DEV_TOOLS": True})
+        create_app({**disabled, "DEV_TOOLS": "0"})
 
 
 @pytest.mark.parametrize("method, path", ROUTES)
-def test_routes_do_not_exist_when_the_setting_is_off(json_config, method, path):
-    application = create_app(json_config)
+def test_routes_do_not_exist_when_the_setting_is_off(disabled, method, path):
+    application = create_app(disabled)
     assert "dev" not in application.blueprints
     assert not [rule for rule in application.url_map.iter_rules() if "/dev" in rule.rule]
     client = application.test_client()

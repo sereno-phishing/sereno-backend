@@ -7,15 +7,14 @@ import pytest
 
 from app.auth import domain
 from app.auth.domain import DuplicateUser, InvalidCredentials, PasswordVerificationError
+from app.auth.postgres_repository import PostgresAuthRepository
 from app.auth.service import AuthService
 
 
 @pytest.fixture
-def service():
-    from app.auth.memory_repository import MemoryAuthRepository
-
+def service(database):
     tokens = iter(["initial", "login", "third"])
-    return AuthService(MemoryAuthRepository(), lambda value: "hash:" + value,
+    return AuthService(PostgresAuthRepository(database), lambda value: "hash:" + value,
                        lambda hashed, value: hashed == "hash:" + value,
                        clock=lambda: "2026-10-27T12:30",
                        token_factory=lambda: next(tokens))

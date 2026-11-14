@@ -1,22 +1,19 @@
-import json
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
 from app import create_app
+from app.survey.domain import SurveyStorageError
+from app.survey.postgres_repository import PostgresSurveyRepository
+from conftest import rows
+
+
+def stored(config):
+    """-> [responses, participants] as stored."""
+    return rows(config, "encuesta_respuesta", "encuesta_participante")
 
 
 ANSWERS = {"answers": [3] * 10}
-
-
-@pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json")}
-
-
-def survey_path(config):
-    return Path(config["DATA_FILE"]).with_name("surveys.json")
 
 
 def register(client, username):
@@ -33,39 +30,18 @@ def login(client, username):
     })
 
 
-def test_repository_contract_atomically_records_participation_and_rejects_duplicate(tmp_path):
-    from app.survey.domain import AlreadySubmitted, SurveySubmission
-    from app.survey.json_repository import JsonSurveyRepository
-
-    path = tmp_path / "surveys.json"
-    first = JsonSurveyRepository(path)
-    second = JsonSurveyRepository(path)
-    submission = SurveySubmission((3,) * 10, "2026-10-27T12:30:00Z")
-
-    assert first.has_submitted("alice") is False
-    first.submit("alice", submission)
-    assert second.has_submitted("alice") is True
-    before = path.read_bytes()
-
-    with pytest.raises(AlreadySubmitted):
-        second.submit("alice", submission)
-
-    assert path.read_bytes() == before
-    assert len(first.list_submissions()) == 1
-
-
 def test_status_and_duplicate_survive_logout_login_app_recreation(config):
     client = create_app(config).test_client()
     assert register(client, "alice").status_code == 201
     assert client.get("/v1/survey").get_json() == {"submitted": False}
     assert client.post("/v1/survey", json=ANSWERS).status_code == 200
     assert client.get("/v1/survey").get_json() == {"submitted": True}
-    before = survey_path(config).read_bytes()
+    before = stored(config)
 
     duplicate = client.post("/v1/survey", json=ANSWERS)
     assert duplicate.status_code == 409
     assert duplicate.get_json() == {"error": "already_submitted"}
-    assert survey_path(config).read_bytes() == before
+    assert stored(config) == before
 
     assert client.post("/v1/auth/logout", json={}).status_code == 200
     recreated = create_app(config).test_client()
@@ -74,7 +50,7 @@ def test_status_and_duplicate_survive_logout_login_app_recreation(config):
     duplicate = recreated.post("/v1/survey", json=ANSWERS)
     assert duplicate.status_code == 409
     assert duplicate.get_json() == {"error": "already_submitted"}
-    assert survey_path(config).read_bytes() == before
+    assert stored(config) == before
 
 
 def test_other_account_is_eligible_and_auth_username_is_case_sensitive(config):
@@ -88,34 +64,33 @@ def test_other_account_is_eligible_and_auth_username_is_case_sensitive(config):
     assert bob.post("/v1/survey", json={"answers": [5] * 10}).status_code == 200
     assert bob.get("/v1/survey").get_json() == {"submitted": True}
 
-    stored = json.loads(survey_path(config).read_text(encoding="utf-8"))
-    assert stored["participants"] == ["Alice", "alice"]
-    assert [record["answers"] for record in stored["surveys"]] == [[1] * 10, [5] * 10]
-    assert all("username" not in record for record in stored["surveys"])
+    responses, participants = stored(config)
+    assert len(participants) == 2
+    assert [response[1] for response in responses] == [[1] * 10, [5] * 10]
 
 
 def test_spoofed_username_is_rejected_without_affecting_real_account(config):
     client = create_app(config).test_client()
     assert register(client, "alice").status_code == 201
-    before = survey_path(config).read_bytes()
+    before = stored(config)
 
     response = client.post("/v1/survey", json={"answers": [3] * 10, "username": "bob"})
 
     assert response.status_code == 400
     assert response.get_json() == {"error": "invalid"}
-    assert survey_path(config).read_bytes() == before
+    assert stored(config) == before
     assert client.get("/v1/survey").get_json() == {"submitted": False}
 
 
 def test_invalid_answers_do_not_consume_eligibility(config):
     client = create_app(config).test_client()
     assert register(client, "alice").status_code == 201
-    before = survey_path(config).read_bytes()
+    before = stored(config)
 
     response = client.post("/v1/survey", json={"answers": [0] + [3] * 9})
 
     assert response.status_code == 400
-    assert survey_path(config).read_bytes() == before
+    assert stored(config) == before
     assert client.get("/v1/survey").get_json() == {"submitted": False}
     assert client.post("/v1/survey", json=ANSWERS).status_code == 200
 
@@ -138,9 +113,8 @@ def test_concurrent_same_account_accepts_exactly_one(config):
     assert [status for status, _ in results].count(409) == 11
     assert all(body == ({} if status == 200 else {"error": "already_submitted"})
                for status, body in results)
-    stored = json.loads(survey_path(config).read_text(encoding="utf-8"))
-    assert stored["participants"] == ["alice"]
-    assert len(stored["surveys"]) == 1
+    responses, participants = stored(config)
+    assert len(participants) == len(responses) == 1
 
 
 def test_concurrent_different_accounts_do_not_lose_entries(config):
@@ -160,78 +134,11 @@ def test_concurrent_different_accounts_do_not_lose_entries(config):
         results = list(pool.map(submit, zip(usernames, tokens)))
 
     assert all(status == 200 for _, status in results)
-    stored = json.loads(survey_path(config).read_text(encoding="utf-8"))
-    assert stored["participants"] == sorted(usernames)
-    assert len(stored["surveys"]) == len(usernames)
+    responses, participants = stored(config)
+    assert len(participants) == len(responses) == len(usernames)
 
 
-def test_failed_atomic_replace_does_not_consume_eligibility(config, monkeypatch):
-    import app.survey.json_repository as adapter
-
-    client = create_app(config).test_client()
-    assert register(client, "alice").status_code == 201
-    path = survey_path(config)
-    before = path.read_bytes()
-
-    def fail(*args):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr(adapter.os, "replace", fail)
-    response = client.post("/v1/survey", json=ANSWERS)
-
-    assert response.status_code == 500
-    assert response.get_json() == {"error": "server"}
-    assert path.read_bytes() == before
-    assert client.get("/v1/survey").get_json() == {"submitted": False}
-
-
-def test_legacy_anonymous_records_are_preserved_and_upgraded_only_on_success(config):
-    path = survey_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    legacy = {"surveys": [{
-        "answers": [2] * 10,
-        "submittedAt": "2026-10-27T12:30:00Z",
-    }]}
-    original = json.dumps(legacy, indent=2).encode()
-    path.write_bytes(original)
-
-    client = create_app(config).test_client()
-    assert path.read_bytes() == original
-    assert register(client, "alice").status_code == 201
-    assert client.get("/v1/survey").get_json() == {"submitted": False}
-    assert path.read_bytes() == original
-    assert client.post("/v1/survey", json=ANSWERS).status_code == 200
-
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["surveys"][0] == legacy["surveys"][0]
-    assert stored["participants"] == ["alice"]
-    assert len(stored["surveys"]) == 2
-
-
-@pytest.mark.parametrize("participants", [
-    None,
-    {},
-    "alice",
-    [1],
-    [""],
-    ["alice", "alice"],
-    ["bob", "alice"],
-])
-def test_malformed_participants_fail_closed_and_preserve_bytes(tmp_path, participants):
-    from app.survey.domain import SurveyStorageError
-    from app.survey.json_repository import JsonSurveyRepository
-
-    path = tmp_path / "surveys.json"
-    content = json.dumps({"surveys": [], "participants": participants})
-    path.write_text(content, encoding="utf-8")
-
-    with pytest.raises(SurveyStorageError):
-        JsonSurveyRepository(path)
-
-    assert path.read_text(encoding="utf-8") == content
-
-
-def test_status_requires_valid_session_and_reports_storage_errors(config):
+def test_status_requires_valid_session_and_reports_storage_errors(config, database_down):
     client = create_app(config).test_client()
     response = client.get("/v1/survey")
     assert response.status_code == 401
@@ -250,24 +157,10 @@ def test_status_requires_valid_session_and_reports_storage_errors(config):
     assert response.get_json() == {"error": "invalid"}
 
     assert login(client, "alice").status_code == 200
-    Path(config["DATA_FILE"]).write_text("corrupt auth", encoding="utf-8")
+    database_down()
     response = client.get("/v1/survey")
     assert response.status_code == 500
     assert response.get_json() == {"error": "server"}
-
-
-def test_status_reports_survey_storage_error_without_leaking_data(config):
-    client = create_app(config).test_client()
-    assert register(client, "alice").status_code == 201
-    path = survey_path(config)
-    path.write_text("corrupt /private/location", encoding="utf-8")
-
-    response = client.get("/v1/survey")
-
-    assert response.status_code == 500
-    assert response.get_json() == {"error": "server"}
-    assert "/private/location" not in response.get_data(as_text=True)
-    assert path.read_text(encoding="utf-8") == "corrupt /private/location"
 
 
 def test_status_uses_same_local_http_guard(config):
@@ -279,3 +172,38 @@ def test_status_uses_same_local_http_guard(config):
     )
     assert response.status_code == 403
     assert response.get_json() == {"error": "server"}
+
+
+def test_a_failed_submission_does_not_consume_eligibility(config, database):
+    """The participation mark and the response are one transaction: when the
+    response cannot be stored, the mark is rolled back with it."""
+    client = create_app(config).test_client()
+    assert register(client, "alice").status_code == 201
+    with database.transaction(RuntimeError) as connection:
+        connection.execute("ALTER TABLE encuesta_respuesta RENAME TO respuesta_apartada")
+    try:
+        response = client.post("/v1/survey", json=ANSWERS)
+    finally:
+        with database.transaction(RuntimeError) as connection:
+            connection.execute("ALTER TABLE respuesta_apartada RENAME TO encuesta_respuesta")
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}
+    assert stored(config) == [[], []]
+    assert client.get("/v1/survey").get_json() == {"submitted": False}
+    assert client.post("/v1/survey", json=ANSWERS).status_code == 200
+
+
+def test_status_reports_survey_storage_error_without_leaking_data(config, monkeypatch):
+    def fail(*arguments):
+        raise SurveyStorageError("Storage unavailable: /private/location")
+
+    client = create_app(config).test_client()
+    assert register(client, "alice").status_code == 201
+    monkeypatch.setattr(PostgresSurveyRepository, "has_submitted", fail)
+
+    response = client.get("/v1/survey")
+
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}
+    assert "/private/location" not in response.get_data(as_text=True)

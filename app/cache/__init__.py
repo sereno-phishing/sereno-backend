@@ -1,1 +1,1 @@
-"""Verdict cache: domain, repository port, JSON/memory/Redis adapters and service."""
+"""Verdict cache: domain, repository port, Redis adapter and service."""

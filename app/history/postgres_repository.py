@@ -70,7 +70,7 @@ class PostgresHistoryRepository:
 
     def append(self, username, record):
         """A record that arrives through the port has no URL hash and no model
-        version (the import of the JSON history, tests): it becomes a consulta
+        version: it becomes a consulta
         row on the domain's hashless url_evaluada row, without a prediccion.
         Verdicts served by the application are written by the verdict journal."""
         self._valid_username(username)

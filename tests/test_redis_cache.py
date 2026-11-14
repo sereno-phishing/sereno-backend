@@ -1,5 +1,5 @@
-"""What is specific to the Redis cache adapter; the behaviour it shares with
-the JSON and memory adapters is in tests/test_cache.py."""
+"""What is specific to the Redis cache adapter; the behaviour of the cache
+port is in tests/test_cache.py."""
 from datetime import datetime, timedelta, timezone
 
 import pytest

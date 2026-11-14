@@ -1,18 +1,19 @@
-"""History and query-log ports against every adapter, and the PostgreSQL
+"""The history and query-log ports, and the
 `consulta` model where one row per served verdict backs both."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.cache.memory_repository import MemoryCacheRepository
+from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
 from app.history.domain import CAPACITY, HistoryRecord, HistoryStorageError
-from app.history.json_repository import JsonHistoryRepository
+from app.history.postgres_repository import PostgresHistoryRepository
 from app.history.service import HistoryService
 from app.metrics.domain import QueryEvent, QueryLogStorageError
-from app.metrics.json_repository import JsonQueryLogRepository
+from app.metrics.postgres_repository import PostgresQueryLogRepository
 from app.metrics.service import MetricsService
 from app.verdict.classifier import Classification
+from app.verdict.postgres_journal import PostgresVerdictJournal
 from app.verdict.service import VerdictService
 from app.verdict.url import cache_key, normalize
 
@@ -64,25 +65,15 @@ def count(database, query):
         return connection.execute(query).fetchone()[0]
 
 
-@pytest.fixture(params=["json", "postgres"])
-def histories(request, tmp_path):
-    if request.param == "json":
-        return JsonHistoryRepository(tmp_path / "history.json")
-    from app.history.postgres_repository import PostgresHistoryRepository
-
-    database = request.getfixturevalue("database")
+@pytest.fixture
+def histories(database):
     add_accounts(database, "alice", "bob")
     return PostgresHistoryRepository(database, zone=lambda: LIMA)
 
 
-@pytest.fixture(params=["json", "postgres"])
-def query_logs(request, tmp_path):
+@pytest.fixture
+def query_logs(database):
     """-> factory(capacity) of QueryLogRepository adapters over one store."""
-    if request.param == "json":
-        return lambda capacity: JsonQueryLogRepository(tmp_path / "queries.json", capacity)
-    from app.metrics.postgres_repository import PostgresQueryLogRepository
-
-    database = request.getfixturevalue("database")
     return lambda capacity: PostgresQueryLogRepository(database, capacity)
 
 
@@ -195,19 +186,15 @@ def test_invalid_query_event_is_a_storage_error(query_logs):
 # PostgreSQL: one consulta row per served verdict
 
 @pytest.fixture
-def served(database):
+def served(database, redis_client):
     """-> (verdict service journaling into PostgreSQL, history, metrics, clock, spies)."""
-    from app.history.postgres_repository import PostgresHistoryRepository
-    from app.metrics.postgres_repository import PostgresQueryLogRepository
-    from app.verdict.postgres_journal import PostgresVerdictJournal
-
     add_accounts(database, "alice", "bob")
     clock = Clock()
     history = HistoryService(PostgresHistoryRepository(database, zone=lambda: clock().tzinfo),
                              clock)
     metrics = MetricsService(PostgresQueryLogRepository(database), clock)
     spies = SpySideEffect(), SpySideEffect()
-    service = VerdictService(CacheService(MemoryCacheRepository(), clock), SpyClassifier(),
+    service = VerdictService(CacheService(RedisCacheRepository(redis_client, database), clock), SpyClassifier(),
                              spies[0], query_log=spies[1],
                              journal=PostgresVerdictJournal(database, clock))
     return service, history, metrics, clock, spies
@@ -287,21 +274,17 @@ def test_clearing_a_history_unlinks_the_user_and_keeps_the_metrics(database, ser
     assert count(database, "SELECT count(*) FROM prediccion") == 2
 
 
-def test_a_journal_failure_never_fails_the_verdict(database):
-    from app.verdict.postgres_journal import PostgresVerdictJournal
-
+def test_a_journal_failure_never_fails_the_verdict(database, redis_client):
     class Down:
         def transaction(self, error):
             raise error("Storage unavailable")
 
-    service = VerdictService(CacheService(MemoryCacheRepository(), Clock()), SpyClassifier(),
+    service = VerdictService(CacheService(RedisCacheRepository(redis_client, database), Clock()), SpyClassifier(),
                              SpySideEffect(), journal=PostgresVerdictJournal(Down(), Clock()))
     assert service.evaluate("https://shop.pe/a", "alice")["verdict"] == "phishing"
 
 
 def test_postgres_history_requires_an_existing_account(database):
-    from app.history.postgres_repository import PostgresHistoryRepository
-
     histories = PostgresHistoryRepository(database, zone=lambda: LIMA)
     with pytest.raises(HistoryStorageError):
         histories.append("ghost", record())
@@ -311,9 +294,6 @@ def test_postgres_history_requires_an_existing_account(database):
 
 def test_records_appended_through_the_ports_have_no_url_hash_or_prediction(database):
     """The ports carry a domain only: such rows hang from a hashless url_evaluada row."""
-    from app.history.postgres_repository import PostgresHistoryRepository
-    from app.metrics.postgres_repository import PostgresQueryLogRepository
-
     add_accounts(database, "alice")
     PostgresHistoryRepository(database, zone=lambda: LIMA).append("alice", record())
     PostgresQueryLogRepository(database).append(event(0))

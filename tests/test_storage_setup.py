@@ -4,14 +4,13 @@ from pathlib import Path
 import pytest
 
 from app.config import settings
-from app.storage.factory import DRIVERS, build_repositories
 
 
 ROOT = Path(__file__).resolve().parent.parent
 ADD_TABLES = {"usuario", "url_evaluada", "consulta", "prediccion", "politica_dominio",
               "version_modelo"}
 AUXILIARY_TABLES = {"sesion", "encuesta_respuesta", "encuesta_participante",
-                    "configuracion_cache", "invalidacion_cache", "importacion"}
+                    "configuracion_cache", "invalidacion_cache"}
 
 
 class Failure(Exception):
@@ -21,31 +20,6 @@ class Failure(Exception):
 def columns(connection, table):
     return {row[0] for row in connection.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name = %s", (table,))}
-
-
-def test_settings_default_to_json_and_the_local_compose_services(monkeypatch):
-    for name in ("STORAGE_DRIVER", "DATABASE_URL", "REDIS_URL"):
-        monkeypatch.delenv(name, raising=False)
-    values = settings()
-    assert values["STORAGE_DRIVER"] == "json"
-    assert values["DATABASE_URL"] == "postgresql://sereno:sereno@127.0.0.1:5432/sereno"
-    assert values["REDIS_URL"] == "redis://127.0.0.1:6379/0"
-    monkeypatch.setenv("DATABASE_URL", "postgresql://other@127.0.0.1/x")
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/3")
-    values = settings()
-    assert values["DATABASE_URL"] == "postgresql://other@127.0.0.1/x"
-    assert values["REDIS_URL"] == "redis://127.0.0.1:6379/3"
-
-
-def test_factory_builds_the_json_adapters_and_rejects_unknown_drivers(tmp_path):
-    config = {**settings(), "STORAGE_DRIVER": "json", "DATA_FILE": str(tmp_path / "db.json")}
-    repositories = build_repositories(config)
-    assert repositories.auth.get_user("missing") is None
-    assert repositories.policy.list() == ()
-    assert (tmp_path / "cache.json").exists() and (tmp_path / "queries.json").exists()
-    assert "json" in DRIVERS
-    with pytest.raises(ValueError, match="Unsupported storage driver"):
-        build_repositories({**config, "STORAGE_DRIVER": "sqlite"})
 
 
 def test_compose_services_are_pinned_and_listen_on_loopback_only():
@@ -90,7 +64,6 @@ def test_a_transaction_commits_on_success_and_rolls_back_on_failure(database):
 
 
 def test_an_unreachable_database_raises_the_callers_storage_error():
-    pytest.importorskip("psycopg")
     from app.storage.postgres import Database
 
     database = Database("postgresql://sereno:sereno@127.0.0.1:1/sereno_test", timeout=0.5)
@@ -100,3 +73,28 @@ def test_an_unreachable_database_raises_the_callers_storage_error():
                 pass
     finally:
         database.close()
+
+
+def test_settings_default_to_the_local_compose_services(monkeypatch):
+    for name in ("DATABASE_URL", "REDIS_URL"):
+        monkeypatch.delenv(name, raising=False)
+    values = settings()
+    assert values["DATABASE_URL"] == "postgresql://sereno:sereno@127.0.0.1:5432/sereno"
+    assert values["REDIS_URL"] == "redis://127.0.0.1:6379/0"
+    monkeypatch.setenv("DATABASE_URL", "postgresql://other@127.0.0.1/x")
+    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/3")
+    values = settings()
+    assert values["DATABASE_URL"] == "postgresql://other@127.0.0.1/x"
+    assert values["REDIS_URL"] == "redis://127.0.0.1:6379/3"
+
+
+def test_unreachable_services_are_named_with_the_command_that_starts_them():
+    from conftest import (TEST_DATABASE_URL, TEST_REDIS_URL, services_down_message,
+                          unreachable_services)
+
+    assert unreachable_services(TEST_DATABASE_URL, TEST_REDIS_URL) == []
+    missing = unreachable_services("postgresql://sereno:sereno@127.0.0.1:1/sereno_test",
+                                   "redis://127.0.0.1:1/15")
+    assert missing == ["PostgreSQL", "Redis"]
+    message = services_down_message(missing)
+    assert "PostgreSQL and Redis" in message and "docker compose up -d --wait" in message

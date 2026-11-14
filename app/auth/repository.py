@@ -4,7 +4,7 @@ from .domain import Session, User
 
 
 class AuthRepository(Protocol):
-    """Port for valid domain records; operations are atomic within one process.
+    """Port for valid domain records; every operation is atomic.
 
     Usernames are case-sensitive. Missing lookups return None and revocation is
     idempotent. Records cross the boundary as independent snapshots. Sessions
@@ -25,9 +25,7 @@ class AuthRepository(Protocol):
 
     def delete_session(self, token: str) -> None: ...
 
-    # Account administration, used only by the development tools. Implemented
-    # by the PostgreSQL adapter only: the JSON and memory adapters are being
-    # retired and were not extended.
+    # Account administration, used only by the development tools.
 
     def list_users(self) -> tuple[User, ...]:
         """Every user, ordered by username (code point order)."""

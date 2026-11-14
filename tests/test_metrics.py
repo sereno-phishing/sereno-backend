@@ -1,13 +1,13 @@
-import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
 from app import create_app
-from app.metrics.domain import CAPACITY, InvalidQueryEvent, QueryEvent, compute_metrics
-from app.metrics.json_repository import JsonQueryLogRepository
-from app.metrics.service import MetricsService
+from conftest import set_role
+from app.metrics.domain import (InvalidQueryEvent, QueryEvent, QueryLogStorageError,
+                                compute_metrics)
+from app.metrics.postgres_repository import PostgresQueryLogRepository
+from app.verdict.postgres_journal import PostgresVerdictJournal
 
 
 LIMA = timezone(timedelta(hours=-5))
@@ -39,17 +39,6 @@ def test_dashboard_status_is_derived_from_verdict_and_policy(verdict, policy, st
 def test_query_event_rejects_values_outside_the_two_classes_and_policies(verdict, policy):
     with pytest.raises(InvalidQueryEvent):
         QueryEvent("shop.pe", verdict, policy, "modelo", 100, NOW)
-
-
-def test_query_log_written_with_the_three_state_status_stays_readable(tmp_path):
-    path = tmp_path / "queries.json"
-    path.write_text(json.dumps({"queries": [
-        {"domain": "a.pe", "status": status, "source": "modelo", "latencyMs": 7,
-         "at": NOW.isoformat()} for status in ("seguro", "advertencia", "bloqueo")]}),
-        encoding="utf-8")
-    events = JsonQueryLogRepository(path).list()
-    assert [(item.verdict, item.policy) for item in events] == [
-        ("legitima", "advertencia"), ("phishing", "advertencia"), ("phishing", "bloqueo")]
 
 
 def test_empty_log_gives_zeroed_dashboard_shape():
@@ -119,37 +108,12 @@ def test_queries_logged_at_the_same_instant_list_the_last_logged_first():
                                                       "older.pe"]
 
 
-def test_json_query_log_keeps_newest_capacity(tmp_path):
-    assert CAPACITY >= 1000
-    repository = JsonQueryLogRepository(tmp_path / "queries.json", capacity=5)
-    service = MetricsService(repository, lambda: NOW)
-    for index in range(8):
-        repository.append(event(0, domain=f"d{index}.pe"))
-    events = JsonQueryLogRepository(tmp_path / "queries.json", capacity=5).list()
-    assert [item.domain for item in events] == [f"d{index}.pe" for index in range(3, 8)]
-    assert service.metrics()["analyzed"] == 5
-
-
 # HTTP
-
-@pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json"),
-            "QUERY_LOG_DATA_FILE": str(tmp_path / "queries.json")}
-
 
 def register(client, username="alice"):
     response = client.post("/v1/auth/register",
                            json={"username": username, "password": "throwaway"})
     assert response.status_code == 201
-
-
-def make_admin(client, config):
-    register(client)
-    path = Path(config["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"]["alice"]["role"] = "admin"
-    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_metrics_require_administrator(config):
@@ -167,23 +131,14 @@ def test_metrics_reflect_every_verdict_including_anonymous(config):
     anonymous.post("/v1/verdict", json={"url": "https://pago-servicios-linea.net/"})
     anonymous.post("/v1/verdict", json={"url": "https://example.org/"})
     admin = create_app(config).test_client()
-    make_admin(admin, config)
+    register(admin)
+    set_role(config, "alice", "admin")
     metrics = admin.get("/v1/metrics").get_json()["metrics"]
     assert set(metrics) == SEED_KEYS
     assert metrics["analyzed"] == 3
     assert metrics["phishingCount"] == 2
     assert metrics["cacheHitPct"] == 33
     assert [query["source"] for query in metrics["queries"]] == ["Modelo", "Caché", "Modelo"]
-
-
-def test_query_log_failure_never_fails_the_verdict_but_fails_metrics(config):
-    client = create_app(config).test_client()
-    make_admin(client, config)
-    Path(config["QUERY_LOG_DATA_FILE"]).write_text("{broken", encoding="utf-8")
-    assert client.post("/v1/verdict", json={"url": "https://x.pe"}).status_code == 200
-    response = client.get("/v1/metrics")
-    assert response.status_code == 500
-    assert response.get_json() == {"error": "server"}
 
 
 class VersionedClassifier:
@@ -197,3 +152,20 @@ def test_model_reports_injected_classifier_version_without_session(config):
     assert create_app(config).test_client().get("/v1/model").get_json() == {"version": "1.3"}
     client = create_app(config, classifier=VersionedClassifier()).test_client()
     assert client.get("/v1/model").get_json() == {"version": "2.0-stacking"}
+
+
+def test_a_journal_failure_never_fails_the_verdict_and_a_log_failure_fails_the_metrics(
+        config, monkeypatch):
+    def fail(*arguments):
+        raise QueryLogStorageError("Storage unavailable")
+
+    client = create_app(config).test_client()
+    register(client)
+    set_role(config, "alice", "admin")
+    monkeypatch.setattr(PostgresVerdictJournal, "record", fail)
+    assert client.post("/v1/verdict", json={"url": "https://x.pe"}).status_code == 200
+    assert client.get("/v1/metrics").get_json()["metrics"]["analyzed"] == 0
+    monkeypatch.setattr(PostgresQueryLogRepository, "list", fail)
+    response = client.get("/v1/metrics")
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}

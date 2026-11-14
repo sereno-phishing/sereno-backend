@@ -1,16 +1,11 @@
-"""The HTTP contract served with STORAGE_DRIVER=postgres (PostgreSQL + Redis)."""
+"""The HTTP contract end to end on PostgreSQL and Redis, and what happens when
+one of them cannot be reached."""
 import pytest
 
 from app import create_app
 
 
 SECRET_URL = "https://www.pago-servicios-linea.net/secret-path?token=abc"
-
-
-@pytest.fixture
-def config(database, redis_url):
-    return {"TESTING": True, "STORAGE_DRIVER": "postgres", "DATABASE_URL": database.url,
-            "REDIS_URL": redis_url}
 
 
 def register(client, username="alice"):
@@ -135,7 +130,7 @@ def test_an_unreachable_database_prevents_startup(redis_url):
     from app.storage.postgres import DatabaseUnavailable
 
     with pytest.raises(DatabaseUnavailable):
-        create_app({"TESTING": True, "STORAGE_DRIVER": "postgres", "REDIS_URL": redis_url,
+        create_app({"TESTING": True, "REDIS_URL": redis_url,
                     "DATABASE_URL": "postgresql://sereno:sereno@127.0.0.1:1/sereno_test"})
 
 
@@ -143,5 +138,5 @@ def test_an_unreachable_redis_prevents_startup(database):
     from app.cache.domain import CacheStorageError
 
     with pytest.raises(CacheStorageError):
-        create_app({"TESTING": True, "STORAGE_DRIVER": "postgres",
-                    "DATABASE_URL": database.url, "REDIS_URL": "redis://127.0.0.1:1/15"})
+        create_app({"TESTING": True, "DATABASE_URL": database.url,
+                    "REDIS_URL": "redis://127.0.0.1:1/15"})

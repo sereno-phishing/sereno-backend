@@ -1,5 +1,5 @@
--- Sereno relational schema (PostgreSQL), applied at every start with
--- STORAGE_DRIVER=postgres. Every statement is idempotent.
+-- Sereno relational schema (PostgreSQL), applied at every start. Every
+-- statement is idempotent.
 --
 -- RNF-05: no table stores a URL. An evaluated URL is represented by the
 -- SHA-256 of its normalized form and by its domain.
@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS usuario (
     fecha_registro  TIMESTAMPTZ NOT NULL
 );
 
--- hash_url is NULL only for records imported from the JSON files, which kept
--- the domain but never the hash; such a row stands for "some URL of the domain".
+-- hash_url is NULL only for records written through the history and query-log
+-- ports, which carry the domain but no hash; such a row stands for "some URL of the domain".
 CREATE TABLE IF NOT EXISTS url_evaluada (
     id_url   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     hash_url CHAR(64) UNIQUE CHECK (hash_url ~ '^[0-9a-f]{64}$'),
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS version_modelo (
 
 -- One row per served verdict: it backs both the per-user history and the
 -- dashboard metrics. veredicto, politica and puntaje are the values that were
--- answered; puntaje is NULL only for imported query-log records, which never
+-- answered; puntaje is NULL only for records written through the query-log port, which never
 -- kept it. Clearing a history sets id_usuario to NULL.
 CREATE TABLE IF NOT EXISTS consulta (
     id_consulta BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -98,10 +98,4 @@ CREATE TABLE IF NOT EXISTS invalidacion_cache (
     dominio         TEXT NOT NULL,
     fecha           DATE NOT NULL,
     veredicto       TEXT CHECK (veredicto IN ('phishing', 'legitima'))
-);
-
--- Sections of the local JSON data already loaded by app.tools.import_json.
-CREATE TABLE IF NOT EXISTS importacion (
-    seccion TEXT PRIMARY KEY,
-    fecha   TIMESTAMPTZ NOT NULL DEFAULT now()
 );

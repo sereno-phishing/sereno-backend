@@ -1,14 +1,12 @@
-import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
 from app import create_app
 from app.cache.domain import CacheStorageError, InvalidCache, domain_of
-from app.cache.json_repository import JsonCacheRepository
-from app.cache.memory_repository import MemoryCacheRepository
+from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
+from conftest import rows, set_role
 
 
 START = datetime(2026, 10, 31, 9, 30, tzinfo=timezone(timedelta(hours=-5)))
@@ -26,13 +24,18 @@ class Clock:
 
 
 @pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json"),
-            "CACHE_DATA_FILE": str(tmp_path / "cache.json")}
+def repository(database, redis_client):
+    return RedisCacheRepository(redis_client, database)
 
 
-def cache_path(config):
-    return Path(config["CACHE_DATA_FILE"])
+def stored(config):
+    """-> [TTL settings, invalidations] as stored."""
+    return rows(config, "configuracion_cache", "invalidacion_cache")
+
+
+def make_admin(client, config, username="alice"):
+    register(client, username)
+    set_role(config, username, "admin")
 
 
 def register(client, username="alice"):
@@ -40,26 +43,6 @@ def register(client, username="alice"):
                            json={"username": username, "password": "throwaway"})
     assert response.status_code == 201
     return response
-
-
-def make_admin(client, config, username="alice"):
-    register(client, username)
-    path = Path(config["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"][username]["role"] = "admin"
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-@pytest.fixture(params=["memory", "json", "redis"])
-def repository(request, tmp_path):
-    if request.param == "memory":
-        return MemoryCacheRepository()
-    if request.param == "redis":
-        from app.cache.redis_repository import RedisCacheRepository
-
-        return RedisCacheRepository(request.getfixturevalue("redis_client"),
-                                    request.getfixturevalue("database"))
-    return JsonCacheRepository(tmp_path / "cache.json")
 
 
 @pytest.mark.parametrize("url, expected", [
@@ -142,20 +125,6 @@ def test_storing_a_new_verdict_reports_its_class_in_pending_invalidations(reposi
     assert service.view()["invalidations"][1]["verdict"] == "phishing"
 
 
-def test_invalidation_rows_stored_with_a_status_text_are_upgraded_on_read(tmp_path):
-    path = tmp_path / "cache.json"
-    texts = ["Se reevaluará en la próxima consulta", "Reevaluado: legitima",
-             "Reevaluado: phishing", "Reevaluado: seguro", "Reevaluado: bloqueo", "otro"]
-    path.write_text(json.dumps({
-        "ttlPhishingDays": 7, "ttlLegitHours": 24, "entries": {},
-        "invalidations": [{"domain": f"d{index}.pe", "status": text, "date": "2026-10-30"}
-                          for index, text in enumerate(texts)]}), encoding="utf-8")
-    view = CacheService(JsonCacheRepository(path), Clock()).view()
-    assert [row["verdict"] for row in view["invalidations"]] == [
-        None, "legitima", "phishing", "legitima", "phishing", None]
-    assert all(set(row) == {"domain", "date", "verdict"} for row in view["invalidations"])
-
-
 @pytest.mark.parametrize("verdict", ["seguro", "advertencia", "bloqueo", "", None])
 def test_only_the_two_model_classes_are_cached(repository, verdict):
     service = CacheService(repository, Clock())
@@ -170,36 +139,6 @@ def test_invalid_invalidation_domain(repository, domain):
         CacheService(repository, Clock()).invalidate(domain)
 
 
-def test_json_repository_survives_recreation_and_fails_closed(tmp_path):
-    path = tmp_path / "cache.json"
-    service = CacheService(JsonCacheRepository(path), Clock())
-    service.set_ttl(2, 3)
-    service.store("key-safe", "safe.pe", "legitima", 0.04)
-    recreated = CacheService(JsonCacheRepository(path), Clock())
-    assert recreated.view()["ttlPhishingDays"] == 2
-    assert recreated.lookup("key-safe").score == 0.04
-    path.write_text("{broken", encoding="utf-8")
-    with pytest.raises(CacheStorageError):
-        JsonCacheRepository(path)
-    assert path.read_text(encoding="utf-8") == "{broken"
-
-
-def test_entries_cached_by_domain_with_a_three_state_status_are_dropped_on_read(tmp_path):
-    path = tmp_path / "cache.json"
-    path.write_text(json.dumps({
-        "ttlPhishingDays": 3, "ttlLegitHours": 24,
-        "invalidations": [{"domain": "bad.net", "status": "Reevaluado: bloqueo",
-                           "date": "2026-10-30"}],
-        "entries": {"example.com": {"status": "seguro", "score": 0.05,
-                                    "cachedAt": START.isoformat()}}}), encoding="utf-8")
-    repository = JsonCacheRepository(path)
-    state = repository.read()
-    assert state.entries == {} and state.ttlPhishingDays == 3
-    assert state.invalidations[0].verdict == "phishing"
-    CacheService(repository, Clock()).store("key-safe", "safe.pe", "legitima", 0.04)
-    assert set(json.loads(path.read_text(encoding="utf-8"))["entries"]) == {"key-safe"}
-
-
 # HTTP
 
 @pytest.mark.parametrize("method, path, body", [
@@ -210,7 +149,7 @@ def test_entries_cached_by_domain_with_a_three_state_status_are_dropped_on_read(
 def test_cache_routes_require_administrator(config, method, path, body):
     client = create_app(config).test_client()
     kwargs = {} if body is None else {"json": body}
-    before = cache_path(config).read_bytes()
+    before = stored(config)
     response = getattr(client, method)(path, **kwargs)
     assert response.status_code == 401
     assert response.get_json() == {"error": "invalid"}
@@ -218,7 +157,7 @@ def test_cache_routes_require_administrator(config, method, path, body):
     response = getattr(client, method)(path, **kwargs)
     assert response.status_code == 403
     assert response.get_json() == {"error": "forbidden"}
-    assert cache_path(config).read_bytes() == before
+    assert stored(config) == before
 
 
 def test_admin_reads_updates_and_invalidates_cache(config):
@@ -249,22 +188,41 @@ def test_admin_reads_updates_and_invalidates_cache(config):
 def test_invalid_cache_input_is_rejected_without_changes(config, path, body):
     client = create_app(config).test_client()
     make_admin(client, config)
-    before = cache_path(config).read_bytes()
+    before = stored(config)
     response = (client.put if path.endswith("ttl") else client.post)(path, json=body)
     assert response.status_code == 400
     assert response.get_json() == {"error": "invalid"}
-    assert cache_path(config).read_bytes() == before
+    assert stored(config) == before
+
+
+
+
+def test_settings_and_entries_are_shared_by_every_adapter_instance(repository, database,
+                                                                   redis_client):
+    service = CacheService(repository, Clock())
+    service.set_ttl(2, 3)
+    service.store("key-safe", "safe.pe", "legitima", 0.04)
+    recreated = CacheService(RedisCacheRepository(redis_client, database), Clock())
+    assert recreated.view()["ttlPhishingDays"] == 2
+    assert recreated.lookup("key-safe").score == 0.04
 
 
 def test_cache_storage_failure_reports_cache_down(config, monkeypatch):
+    def fail(*arguments):
+        raise CacheStorageError("Cache unavailable")
+
     client = create_app(config).test_client()
     make_admin(client, config)
-    cache_path(config).write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(RedisCacheRepository, "settings", fail)
     response = client.get("/v1/cache")
     assert response.status_code == 503
     assert response.get_json() == {"error": "cache_down"}
 
 
-def test_cache_file_defaults_beside_auth_data(tmp_path):
-    create_app({"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json")})
-    assert (tmp_path / "cache.json").exists()
+def test_account_storage_failure_on_a_cache_route_is_a_server_error(config, database_down):
+    client = create_app(config).test_client()
+    make_admin(client, config)
+    database_down()
+    response = client.get("/v1/cache")
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}

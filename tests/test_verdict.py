@@ -1,22 +1,23 @@
-import json
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from pathlib import Path
 
 import pytest
 
 from app import create_app
-from app.cache.json_repository import JsonCacheRepository
-from app.cache.memory_repository import MemoryCacheRepository
+from app.auth.domain import StorageError
+from app.auth.postgres_repository import PostgresAuthRepository
+from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
 from app.history.domain import CAPACITY, HistoryRecord, HistoryStorageError, append
-from app.history.json_repository import JsonHistoryRepository
 from app.history.service import HistoryService
+from app.metrics.domain import QueryLogStorageError
 from app.policy.domain import PolicyStorageError
 from app.verdict.classifier import Classification
 from app.verdict.fake_classifier import FakeClassifier
+from app.verdict.postgres_journal import PostgresVerdictJournal
 from app.verdict.service import ClassifierError, InvalidUrl, VerdictService
 from app.verdict.url import cache_key, normalize
+from conftest import set_role
 
 
 START = datetime(2026, 10, 31, 9, 30, tzinfo=timezone(timedelta(hours=-5)))
@@ -80,11 +81,15 @@ class StubPolicies:
         return self.policies.get(domain, "advertencia")
 
 
-def make_service(classifier=None, history=None, clock=None, policies=None, repository=None):
-    clock = clock or Clock()
-    cache = CacheService(repository or MemoryCacheRepository(), clock)
-    return VerdictService(cache, classifier or FakeClassifier(), history or SpyHistory(),
-                          timer=Timer(), policies=policies), cache
+@pytest.fixture
+def make_service(database, redis_client):
+    """-> make(...) -> (verdict service, its cache service) on the test stores."""
+    def make(classifier=None, history=None, clock=None, policies=None):
+        clock = clock or Clock()
+        cache = CacheService(RedisCacheRepository(redis_client, database), clock)
+        return VerdictService(cache, classifier or FakeClassifier(), history or SpyHistory(),
+                              timer=Timer(), policies=policies), cache
+    return make
 
 
 # FakeClassifier: two-class stand-in over the demo scenario domains of the extension
@@ -110,7 +115,7 @@ def test_normalize_applies_rfc_3986_equivalences_and_keeps_distinct_urls_apart()
     assert cache_key("https://shop.pe/a") == sha256(b"https://shop.pe/a").hexdigest()
 
 
-def test_miss_uses_model_then_equivalent_url_hits_cache():
+def test_miss_uses_model_then_equivalent_url_hits_cache(make_service):
     classifier = SpyClassifier()
     service, _ = make_service(classifier)
     first = service.evaluate("https://www.Shop.pe/a", None)
@@ -122,7 +127,7 @@ def test_miss_uses_model_then_equivalent_url_hits_cache():
     assert classifier.calls == ["https://www.Shop.pe/a"]
 
 
-def test_cache_is_keyed_by_url_not_by_domain():
+def test_cache_is_keyed_by_url_not_by_domain(make_service):
     classifier = SpyClassifier()
     service, _ = make_service(classifier)
     service.evaluate("https://shop.pe/a", None)
@@ -130,18 +135,7 @@ def test_cache_is_keyed_by_url_not_by_domain():
     assert len(classifier.calls) == 2
 
 
-def test_cache_entry_keeps_the_domain_and_a_hash_never_the_url(tmp_path):
-    path = tmp_path / "cache.json"
-    service, _ = make_service(SpyClassifier(), repository=JsonCacheRepository(path))
-    service.evaluate("https://www.shop.pe/secret-path?token=abc", None)
-    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
-    key = sha256(b"https://www.shop.pe/secret-path?token=abc").hexdigest()
-    assert set(entries) == {key}
-    assert entries[key]["domain"] == "shop.pe" and entries[key]["verdict"] == "phishing"
-    assert "secret-path" not in path.read_text(encoding="utf-8")
-
-
-def test_expired_or_invalidated_entry_is_reclassified():
+def test_expired_or_invalidated_entry_is_reclassified(make_service):
     clock = Clock()
     classifier = SpyClassifier(Classification("legitima", 0.1))
     service, cache = make_service(classifier, clock=clock)
@@ -155,7 +149,7 @@ def test_expired_or_invalidated_entry_is_reclassified():
     assert len(classifier.calls) == 3
 
 
-def test_invalidating_a_domain_drops_every_url_of_that_host_only():
+def test_invalidating_a_domain_drops_every_url_of_that_host_only(make_service):
     service, cache = make_service(SpyClassifier())
     for url in ("https://shop.pe/a", "https://www.shop.pe/b", "https://other.pe/a"):
         service.evaluate(url, None)
@@ -165,7 +159,7 @@ def test_invalidating_a_domain_drops_every_url_of_that_host_only():
     assert service.evaluate("https://other.pe/a", None)["source"] == "cache"
 
 
-def test_response_carries_the_domain_policy_in_force_even_on_a_cache_hit():
+def test_response_carries_the_domain_policy_in_force_even_on_a_cache_hit(make_service):
     policies = StubPolicies({"shop.pe": "bloqueo"})
     service, _ = make_service(SpyClassifier(), policies=policies)
     assert service.evaluate("https://shop.pe/a", None)["policy"] == "bloqueo"
@@ -175,13 +169,13 @@ def test_response_carries_the_domain_policy_in_force_even_on_a_cache_hit():
     assert (cached["source"], cached["policy"]) == ("cache", "advertencia")
 
 
-def test_policy_storage_failure_falls_back_to_the_default_policy():
+def test_policy_storage_failure_falls_back_to_the_default_policy(make_service):
     service, _ = make_service(SpyClassifier(), policies=StubPolicies(fail=True))
     verdict = service.evaluate("https://shop.pe/a", None)
     assert (verdict["verdict"], verdict["policy"]) == ("phishing", "advertencia")
 
 
-def test_history_records_signed_in_users_only_and_never_fails_the_verdict():
+def test_history_records_signed_in_users_only_and_never_fails_the_verdict(make_service):
     history = SpyHistory()
     service, _ = make_service(history=history)
     service.evaluate("https://shop.pe", None)
@@ -193,7 +187,7 @@ def test_history_records_signed_in_users_only_and_never_fails_the_verdict():
 
 @pytest.mark.parametrize("url", ["", "   ", "about:blank", "shop.pe", "ftp://shop.pe/x",
                                  "https://", "https://bad host.pe/", None, 3])
-def test_url_the_normalizer_rejects_is_invalid(url):
+def test_url_the_normalizer_rejects_is_invalid(make_service, url):
     classifier = SpyClassifier()
     service, _ = make_service(classifier)
     with pytest.raises(InvalidUrl):
@@ -203,7 +197,7 @@ def test_url_the_normalizer_rejects_is_invalid(url):
 
 @pytest.mark.parametrize("result", [RuntimeError("boom"), Classification("seguro", 0.5),
                                     Classification("phishing", 1.5), "phishing"])
-def test_classifier_failure_or_bad_output_is_a_classifier_error(result):
+def test_classifier_failure_or_bad_output_is_a_classifier_error(make_service, result):
     service, cache = make_service(SpyClassifier(result))
     with pytest.raises(ClassifierError):
         service.evaluate("https://shop.pe", None)
@@ -234,33 +228,6 @@ def test_append_keeps_capacity_newest():
     assert entries[0].id == f"h-{CAPACITY + 4}"
 
 
-def test_history_service_builds_extension_records(tmp_path):
-    service = HistoryService(JsonHistoryRepository(tmp_path / "history.json"), Clock(),
-                             id_factory=lambda: "h-fixed")
-    service.record("alice", {"domain": "shop.pe", "verdict": "phishing", "policy": "bloqueo",
-                             "score": 0.97, "source": "cache", "latencyMs": 3})
-    assert service.list("alice") == [{"id": "h-fixed", "domain": "shop.pe", "verdict": "phishing",
-                                      "policy": "bloqueo", "score": 0.97, "source": "cache",
-                                      "ts": "2026-10-31T09:30", "latencyMs": 3}]
-    assert service.list("bob") == []
-    recreated = HistoryService(JsonHistoryRepository(tmp_path / "history.json"), Clock())
-    assert recreated.list("alice")[0]["id"] == "h-fixed"
-
-
-@pytest.mark.parametrize("status, verdict, policy", [
-    ("seguro", "legitima", "advertencia"), ("advertencia", "phishing", "advertencia"),
-    ("bloqueo", "phishing", "bloqueo")])
-def test_history_written_with_the_three_state_status_stays_readable(tmp_path, status, verdict,
-                                                                    policy):
-    path = tmp_path / "history.json"
-    path.write_text(json.dumps({"history": {"alice": [
-        {"id": "h-old", "domain": "shop.pe", "status": status, "score": 0.5, "source": "modelo",
-         "ts": "2026-10-31T09:30", "latencyMs": 7}]}}), encoding="utf-8")
-    entry = HistoryService(JsonHistoryRepository(path), Clock()).list("alice")[0]
-    assert (entry["verdict"], entry["policy"]) == (verdict, policy)
-    assert "status" not in entry
-
-
 def test_default_history_ids_follow_extension_format():
     ids = {HistoryService(None, Clock()).new_id() for _ in range(20)}
     assert len(ids) == 20
@@ -269,54 +236,16 @@ def test_default_history_ids_follow_extension_format():
 
 # HTTP
 
-@pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json"),
-            "CACHE_DATA_FILE": str(tmp_path / "cache.json"),
-            "HISTORY_DATA_FILE": str(tmp_path / "history.json")}
-
-
 def register(client, username="alice"):
     response = client.post("/v1/auth/register",
                            json={"username": username, "password": "throwaway"})
     assert response.status_code == 201
 
 
-def make_admin(client, config, username="alice"):
-    register(client, username)
-    path = Path(config["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"][username]["role"] = "admin"
-    path.write_text(json.dumps(data), encoding="utf-8")
-
-
-def stored_history(config):
-    return json.loads(Path(config["HISTORY_DATA_FILE"]).read_text(encoding="utf-8"))["history"]
-
-
-def test_verdict_route_classifies_caches_and_records_history(config):
-    client = create_app(config).test_client()
-    anonymous = client.post("/v1/verdict", json={"url": "https://www.paypal-secure-login.com/x"})
-    assert anonymous.status_code == 200
-    body = anonymous.get_json()
-    assert set(body) == {"domain", "verdict", "policy", "score", "source", "latencyMs"}
-    assert body["domain"] == "paypal-secure-login.com"
-    assert (body["verdict"], body["policy"], body["score"], body["source"]) == (
-        "phishing", "advertencia", 0.92, "modelo")
-    assert isinstance(body["latencyMs"], int) and body["latencyMs"] >= 0
-    assert stored_history(config) == {}
-
-    register(client)
-    cached = client.post("/v1/verdict", json={"url": "https://www.paypal-secure-login.com/x"})
-    assert cached.get_json()["source"] == "cache"
-    entries = stored_history(config)["alice"]
-    assert [(entry["domain"], entry["verdict"], entry["policy"], entry["source"])
-            for entry in entries] == [("paypal-secure-login.com", "phishing", "advertencia", "cache")]
-
-
 def test_verdict_route_returns_the_administrator_policy_of_the_domain(config):
     client = create_app(config).test_client()
-    make_admin(client, config)
+    register(client)
+    set_role(config, "alice", "admin")
     saved = client.put("/v1/domains", json={"domains": [
         {"domain": "paypal-secure-login.com", "policy": "bloqueo", "updatedAt": "2026-11-13"}]})
     assert saved.status_code == 200
@@ -340,14 +269,6 @@ def test_verdict_route_rejects_invalid_input(config, body):
     assert response.get_json() == {"error": "invalid"}
 
 
-def test_verdict_route_reports_cache_down(config):
-    client = create_app(config).test_client()
-    Path(config["CACHE_DATA_FILE"]).write_text("{broken", encoding="utf-8")
-    response = client.post("/v1/verdict", json={"url": "https://x.pe"})
-    assert response.status_code == 503
-    assert response.get_json() == {"error": "cache_down"}
-
-
 def test_verdict_route_reports_classifier_failure_as_server(config):
     client = create_app(config, classifier=SpyClassifier(RuntimeError("x"))).test_client()
     response = client.post("/v1/verdict", json={"url": "https://x.pe"})
@@ -355,10 +276,60 @@ def test_verdict_route_reports_classifier_failure_as_server(config):
     assert response.get_json() == {"error": "server"}
 
 
-def test_history_failure_does_not_fail_the_verdict(config):
+
+
+def test_verdict_route_classifies_caches_and_records_history(config):
+    client = create_app(config).test_client()
+    anonymous = client.post("/v1/verdict", json={"url": "https://www.paypal-secure-login.com/x"})
+    assert anonymous.status_code == 200
+    body = anonymous.get_json()
+    assert set(body) == {"domain", "verdict", "policy", "score", "source", "latencyMs"}
+    assert body["domain"] == "paypal-secure-login.com"
+    assert (body["verdict"], body["policy"], body["score"], body["source"]) == (
+        "phishing", "advertencia", 0.92, "modelo")
+    assert isinstance(body["latencyMs"], int) and body["latencyMs"] >= 0
+
+    register(client)
+    # The anonymous verdict belongs to nobody.
+    assert client.get("/v1/history").get_json() == {"entries": []}
+    cached = client.post("/v1/verdict", json={"url": "https://www.paypal-secure-login.com/x"})
+    assert cached.get_json()["source"] == "cache"
+    entries = client.get("/v1/history").get_json()["entries"]
+    assert [(entry["domain"], entry["verdict"], entry["policy"], entry["source"])
+            for entry in entries] == [("paypal-secure-login.com", "phishing", "advertencia", "cache")]
+
+
+def test_a_failure_recording_the_verdict_does_not_fail_it(config, monkeypatch):
+    def fail(*arguments):
+        raise QueryLogStorageError("Storage unavailable")
+
     client = create_app(config).test_client()
     register(client)
-    Path(config["HISTORY_DATA_FILE"]).write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(PostgresVerdictJournal, "record", fail)
     response = client.post("/v1/verdict", json={"url": "https://x.pe"})
     assert response.status_code == 200
     assert response.get_json()["verdict"] == "legitima"
+    assert client.get("/v1/history").get_json() == {"entries": []}
+
+
+def test_a_session_storage_failure_serves_the_verdict_as_anonymous(config, monkeypatch):
+    def fail(*arguments):
+        raise StorageError("Storage unavailable")
+
+    client = create_app(config).test_client()
+    register(client)
+    monkeypatch.setattr(PostgresAuthRepository, "get_session", fail)
+    response = client.post("/v1/verdict", json={"url": "https://x.pe"})
+    assert response.status_code == 200
+    monkeypatch.undo()
+    assert client.get("/v1/history").get_json() == {"entries": []}
+
+
+def test_an_unreachable_database_reports_cache_down(config, database_down):
+    """The cache reads its TTL settings from PostgreSQL: without it no verdict
+    can be cached or looked up."""
+    client = create_app(config).test_client()
+    database_down()
+    response = client.post("/v1/verdict", json={"url": "https://x.pe"})
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "cache_down"}

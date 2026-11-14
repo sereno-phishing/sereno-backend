@@ -50,11 +50,6 @@ def artifact_file(tmp_path):
     return path
 
 
-@pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json")}
-
-
 def test_artifact_is_loaded_on_first_use_and_only_once(artifact_file):
     loader = CountingLoader()
     classifier = ModelClassifier(artifact_file, loader)

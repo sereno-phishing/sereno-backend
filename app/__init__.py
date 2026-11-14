@@ -68,9 +68,6 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
         raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
     if not isinstance(app.config["DEV_TOOLS"], bool):
         raise ValueError("DEV_TOOLS must be a boolean")
-    if app.config["DEV_TOOLS"] and app.config["STORAGE_DRIVER"] != "postgres":
-        # Only the PostgreSQL adapter implements account administration.
-        raise ValueError("DEV_TOOLS requires STORAGE_DRIVER=postgres")
     repositories = build_repositories(app.config, clock)
     auth_service = AuthService(repositories.auth, generate_password_hash, check_password_hash)
     survey_service = SurveyService(repositories.survey)

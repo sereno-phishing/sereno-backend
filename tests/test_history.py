@@ -1,14 +1,8 @@
-from pathlib import Path
-
 import pytest
 
 from app import create_app
-
-
-@pytest.fixture
-def config(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "auth.json"),
-            "HISTORY_DATA_FILE": str(tmp_path / "history.json")}
+from app.history.domain import HistoryStorageError
+from app.history.postgres_repository import PostgresHistoryRepository
 
 
 def register(client, username):
@@ -47,11 +41,26 @@ def test_history_lists_own_entries_newest_first_and_clears(config):
         "example.org"]
 
 
-def test_history_storage_failure_is_server_error(config):
+
+
+@pytest.mark.parametrize("method, operation", [("get", "list"), ("delete", "clear")])
+def test_history_storage_failure_is_server_error(config, monkeypatch, method, operation):
+    def fail(*arguments):
+        raise HistoryStorageError("Storage unavailable")
+
     client = create_app(config).test_client()
     register(client, "alice")
-    Path(config["HISTORY_DATA_FILE"]).write_text("{broken", encoding="utf-8")
-    for method in ("get", "delete"):
-        response = getattr(client, method)("/v1/history")
-        assert response.status_code == 500
-        assert response.get_json() == {"error": "server"}
+    monkeypatch.setattr(PostgresHistoryRepository, operation, fail)
+    response = getattr(client, method)("/v1/history")
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}
+
+
+@pytest.mark.parametrize("method", ["get", "delete"])
+def test_history_reports_an_unreachable_database_as_server_error(config, database_down, method):
+    client = create_app(config).test_client()
+    register(client, "alice")
+    database_down()
+    response = getattr(client, method)("/v1/history")
+    assert response.status_code == 500
+    assert response.get_json() == {"error": "server"}

@@ -1,24 +1,19 @@
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
 from app import create_app
-from app.auth.domain import Credentials, StorageError
-from app.auth.json_repository import JsonAuthRepository
+from app.auth.domain import Credentials
+from app.auth.postgres_repository import PostgresAuthRepository
 from app.auth.service import AuthService
+from conftest import rows, set_role
 
 
 @pytest.fixture
-def settings(tmp_path):
-    return {"TESTING": True, "DATA_FILE": str(tmp_path / "db.json")}
-
-
-@pytest.fixture
-def client(settings):
-    return create_app(settings).test_client()
+def client(config):
+    return create_app(config).test_client()
 
 
 def register(client, username="alice", password="secret", **extra):
@@ -28,7 +23,7 @@ def register(client, username="alice", password="secret", **extra):
 
 
 @pytest.mark.parametrize("requested_role", ["admin", "administrador", "unknown"])
-def test_register_exact_public_contract(client, settings, requested_role):
+def test_register_exact_public_contract(client, config, requested_role):
     response = register(client, username=" alice ", role=requested_role)
     assert response.status_code == 201
     body = response.get_json()
@@ -42,9 +37,8 @@ def test_register_exact_public_contract(client, settings, requested_role):
     cookie = response.headers["Set-Cookie"]
     assert "sereno_session=" in cookie
     assert all(flag in cookie for flag in ("Secure", "HttpOnly", "SameSite=None"))
-    stored = json.loads(open(settings["DATA_FILE"], encoding="utf-8").read())
-    assert stored["users"]["alice"]["password_hash"] != "secret"
-    assert "password" not in stored["users"]["alice"]
+    (stored,), = rows(config, "usuario")
+    assert stored[1] == "alice" and "secret" not in stored[2]
     assert "password" not in response.get_data(as_text=True)
 
 
@@ -88,12 +82,12 @@ def test_duplicates_case_sensitive_login_and_bad_password(client):
     assert set(response.get_json()) == {"user", "token"}
 
 
-def test_smoke_persisted_session_and_revocation(settings):
-    app = create_app(settings)
+def test_smoke_persisted_session_and_revocation(config):
+    app = create_app(config)
     client = app.test_client()
     assert client.get("/v1/auth/session").get_json() == {"session": None}
     token = register(client).get_json()["token"]
-    recreated = create_app(settings).test_client()
+    recreated = create_app(config).test_client()
     recreated.set_cookie("sereno_session", token)
     response = recreated.get("/v1/auth/session")
     assert response.status_code == 200
@@ -114,43 +108,8 @@ def test_smoke_persisted_session_and_revocation(settings):
     assert client.get("/v1/auth/session").get_json() == {"session": None}
 
 
-def test_unknown_driver_fails_closed(settings):
-    with pytest.raises(ValueError, match="Unsupported storage driver"):
-        create_app({**settings, "STORAGE_DRIVER": "sqlite"})
-
-
-@pytest.mark.parametrize("content", ["broken", "[]", '{}', '{"users": {}, "sessions": []}',
-    '{"users": {"alice": {}}, "sessions": {}}',
-    '{"users": {}, "sessions": {"orphan": {"username": "x", "loginAt": "2026-01-01T00:00", "token": "orphan"}}}',
-])
-def test_corrupt_data_preserved(tmp_path, content):
-    path = tmp_path / "db.json"
-    path.write_text(content, encoding="utf-8")
-    with pytest.raises(StorageError):
-        JsonAuthRepository(path)
-    assert path.read_text(encoding="utf-8") == content
-
-
-def test_storage_failure_is_controlled(client, settings):
-    from pathlib import Path
-
-    path = Path(settings["DATA_FILE"])
-    path.write_text("corrupt", encoding="utf-8")
-    for method, url, kwargs in (
-        (client.post, "/v1/auth/register", {"json": {"username": "a", "password": "p"}}),
-        (client.post, "/v1/auth/login", {"json": {"username": "a", "password": "p"}}),
-        (client.get, "/v1/auth/session", {}),
-        (client.post, "/v1/auth/logout", {"json": {}}),
-    ):
-        client.set_cookie("sereno_session", "token")
-        response = method(url, **kwargs)
-        assert response.status_code == 500
-        assert response.get_json() == {"error": "server"}
-    assert path.read_text(encoding="utf-8") == "corrupt"
-
-
-def test_repository_contract_and_injected_hashing(tmp_path):
-    repo = JsonAuthRepository(tmp_path / "db.json")
+def test_repository_contract_and_injected_hashing(database):
+    repo = PostgresAuthRepository(database)
     service = AuthService(repo, lambda value: "hashed:" + value,
                           lambda hashed, value: hashed == "hashed:" + value,
                           clock=lambda: "2026-10-27T12:30", token_factory=lambda: "token")
@@ -164,51 +123,11 @@ def test_repository_contract_and_injected_hashing(tmp_path):
     assert repo.get_user("missing") is None
 
 
-def test_concurrent_duplicate_registration_is_atomic(tmp_path):
-    path = tmp_path / "db.json"
-
-    def attempt(_):
-        client = create_app({"TESTING": True, "DATA_FILE": str(path)}).test_client()
-        return register(client).status_code
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(attempt, range(4)))
-    assert sorted(results) == [201, 409, 409, 409]
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert len(data["users"]) == len(data["sessions"]) == 1
-
-
-def test_failed_atomic_replace_keeps_original(tmp_path, monkeypatch):
-    import app.auth.json_repository as adapter
-
-    path = tmp_path / "db.json"
-    repo = JsonAuthRepository(path)
-    before = path.read_bytes()
-
-    def fail(*args):
-        raise OSError("private path")
-
-    monkeypatch.setattr(adapter.os, "replace", fail)
-    service = AuthService(repo, lambda value: "hash", lambda hashed, value: True)
-    with pytest.raises(StorageError):
-        service.register(Credentials("alice", "secret"))
-    assert path.read_bytes() == before
-    assert list(tmp_path.iterdir()) == [path]
-
-
 @pytest.mark.parametrize("body", ["{", "[]", "null", '"text"'])
 def test_logout_rejects_invalid_json(client, body):
     response = client.post("/v1/auth/logout", data=body, content_type="application/json")
     assert response.status_code == 400
     assert response.get_json() == {"error": "invalid"}
-
-
-def test_relative_storage_path_ignores_invocation_directory(tmp_path, monkeypatch):
-    from app.config import BACKEND_ROOT, data_path
-
-    monkeypatch.chdir(tmp_path)
-    assert data_path("data/db.json") == BACKEND_ROOT / "data/db.json"
-    assert data_path(tmp_path / "db.json") == tmp_path / "db.json"
 
 
 def test_whitespace_password_is_not_trimmed(client):
@@ -227,12 +146,59 @@ def test_unencodable_credentials_are_invalid(client, endpoint, status, field):
     assert response.get_json() == {"error": "invalid"}
 
 
-def test_persisted_administrator_role_is_valid_and_returned_by_existing_session(client, settings):
+def test_arbitrary_verifier_errors_are_not_hidden(database):
+    def broken_verifier(hashed, password):
+        raise RuntimeError("unexpected verifier failure")
+
+    service = AuthService(PostgresAuthRepository(database),
+                          lambda value: "hash", broken_verifier)
+    service.register(Credentials("alice", "secret"))
+    with pytest.raises(RuntimeError, match="unexpected verifier failure"):
+        service.login(Credentials("alice", "secret"))
+
+
+def test_storage_failure_is_controlled(client, database_down):
     token = register(client).get_json()["token"]
-    path = Path(settings["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"]["alice"]["role"] = "admin"
-    path.write_text(json.dumps(data), encoding="utf-8")
+    database_down()
+    for method, url, kwargs in (
+        (client.post, "/v1/auth/register", {"json": {"username": "a", "password": "p"}}),
+        (client.post, "/v1/auth/login", {"json": {"username": "alice", "password": "secret"}}),
+        (client.get, "/v1/auth/session", {}),
+        (client.post, "/v1/auth/logout", {"json": {}}),
+    ):
+        client.set_cookie("sereno_session", token)
+        response = method(url, **kwargs)
+        assert response.status_code == 500
+        assert response.get_json() == {"error": "server"}
+        assert "refused" not in response.get_data(as_text=True)
+
+
+def test_nothing_is_lost_while_the_database_is_unreachable(client, config, database_down,
+                                                           monkeypatch):
+    token = register(client).get_json()["token"]
+    before = rows(config, "usuario", "sesion")
+    database_down()
+    assert client.post("/v1/auth/logout", json={}).status_code == 500
+    monkeypatch.undo()
+    assert rows(config, "usuario", "sesion") == before
+    client.set_cookie("sereno_session", token)
+    assert client.get("/v1/auth/session").get_json()["session"]["username"] == "alice"
+
+
+def test_concurrent_duplicate_registration_is_atomic(config):
+    def attempt(_):
+        return register(create_app(config).test_client()).status_code
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(attempt, range(4)))
+    assert sorted(results) == [201, 409, 409, 409]
+    users, sessions = rows(config, "usuario", "sesion")
+    assert len(users) == len(sessions) == 1
+
+
+def test_stored_administrator_role_is_returned_by_existing_session(client, config):
+    token = register(client).get_json()["token"]
+    set_role(config, "alice", "admin")
 
     client.set_cookie("sereno_session", token)
     response = client.get("/v1/auth/session")
@@ -241,44 +207,12 @@ def test_persisted_administrator_role_is_valid_and_returned_by_existing_session(
     assert response.get_json()["session"]["isAdmin"] is True
 
 
-@pytest.mark.parametrize("role", ["administrador", "usuario", "Admin", "unknown", "", None, 3])
-def test_unknown_persisted_roles_fail_closed_and_preserve_bytes(settings, role):
-    client = create_app(settings).test_client()
+def test_corrupt_password_hash_is_server_error_and_preserved(client, config, database):
     assert register(client).status_code == 201
-    path = Path(settings["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"]["alice"]["role"] = role
-    path.write_text(json.dumps(data), encoding="utf-8")
-    before = path.read_bytes()
-
-    response = client.get("/v1/auth/session")
-
-    assert response.status_code == 500
-    assert response.get_json() == {"error": "server"}
-    assert path.read_bytes() == before
-
-
-def test_corrupt_password_hash_is_server_error_and_preserved(client, settings):
-    from pathlib import Path
-
-    assert register(client).status_code == 201
-    path = Path(settings["DATA_FILE"])
-    data = json.loads(path.read_text(encoding="utf-8"))
-    data["users"]["alice"]["password_hash"] = "scrypt:bad$abc$def"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    before = path.read_bytes()
+    with database.transaction(RuntimeError) as connection:
+        connection.execute("UPDATE usuario SET hash_contrasena = 'scrypt:bad$abc$def'")
+    before = rows(config, "usuario", "sesion")
     response = client.post("/v1/auth/login", json={"username": "alice", "password": "secret"})
     assert response.status_code == 500
     assert response.get_json() == {"error": "server"}
-    assert path.read_bytes() == before
-
-
-def test_arbitrary_verifier_errors_are_not_hidden(tmp_path):
-    def broken_verifier(hashed, password):
-        raise RuntimeError("unexpected verifier failure")
-
-    service = AuthService(JsonAuthRepository(tmp_path / "db.json"),
-                          lambda value: "hash", broken_verifier)
-    service.register(Credentials("alice", "secret"))
-    with pytest.raises(RuntimeError, match="unexpected verifier failure"):
-        service.login(Credentials("alice", "secret"))
+    assert rows(config, "usuario", "sesion") == before

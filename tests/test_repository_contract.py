@@ -4,20 +4,12 @@ from dataclasses import replace
 import pytest
 
 from app.auth.domain import Session, StorageError, User
-from app.auth.json_repository import JsonAuthRepository
+from app.auth.postgres_repository import PostgresAuthRepository
 
 
-@pytest.fixture(params=["json", "memory", "postgres"])
-def repository(request, tmp_path):
-    if request.param == "json":
-        return JsonAuthRepository(tmp_path / "db.json")
-    if request.param == "postgres":
-        from app.auth.postgres_repository import PostgresAuthRepository
-
-        return PostgresAuthRepository(request.getfixturevalue("database"))
-    from app.auth.memory_repository import MemoryAuthRepository
-
-    return MemoryAuthRepository()
+@pytest.fixture
+def repository(database):
+    return PostgresAuthRepository(database)
 
 
 USER = User("alice", "hash", "user", "2026-10-27T12:30")
@@ -117,62 +109,55 @@ def test_concurrent_duplicate_registration_is_atomic(repository):
         assert (repository.get_session(token) is not None) == created
 
 
-# Account administration (development tools): PostgreSQL only, the JSON and
-# memory adapters are being retired and do not implement it.
+# Account administration (development tools)
 
-@pytest.fixture
-def accounts(database):
-    from app.auth.postgres_repository import PostgresAuthRepository
-
-    return PostgresAuthRepository(database)
-
-def test_users_are_listed_by_name_as_snapshots(accounts):
-    assert accounts.list_users() == ()
+def test_users_are_listed_by_name_as_snapshots(repository):
+    assert repository.list_users() == ()
     for name in ("carol", "alice", "Bob"):
-        accounts.register(replace(USER, username=name),
+        repository.register(replace(USER, username=name),
                             replace(SESSION, username=name, token="token-" + name))
-    listed = accounts.list_users()
+    listed = repository.list_users()
     assert [user.username for user in listed] == ["Bob", "alice", "carol"]
     assert listed[1] == USER
     object.__setattr__(listed[1], "role", "admin")
-    assert accounts.get_user("alice") == USER
+    assert repository.get_user("alice") == USER
 
 
-def test_role_change_keeps_the_account_and_its_sessions(accounts):
-    accounts.register(USER, SESSION)
-    assert accounts.set_role("alice", "admin") is True
-    assert accounts.get_user("alice") == replace(USER, role="admin")
-    assert accounts.get_session("initial") == SESSION
-    assert accounts.set_role("alice", "admin") is True
-    assert accounts.set_role("alice", "user") is True
-    assert accounts.get_user("alice") == USER
-    assert accounts.set_role("missing", "admin") is False
-    assert accounts.set_role("Alice", "admin") is False
-    assert accounts.get_user("missing") is None
+def test_role_change_keeps_the_account_and_its_sessions(repository):
+    repository.register(USER, SESSION)
+    assert repository.set_role("alice", "admin") is True
+    assert repository.get_user("alice") == replace(USER, role="admin")
+    assert repository.get_session("initial") == SESSION
+    assert repository.set_role("alice", "admin") is True
+    assert repository.set_role("alice", "user") is True
+    assert repository.get_user("alice") == USER
+    assert repository.set_role("missing", "admin") is False
+    assert repository.set_role("Alice", "admin") is False
+    assert repository.get_user("missing") is None
 
 
 @pytest.mark.parametrize("role", ["root", "", None, "ADMIN"])
-def test_role_outside_the_domain_is_rejected_without_changes(accounts, role):
-    accounts.register(USER, SESSION)
+def test_role_outside_the_domain_is_rejected_without_changes(repository, role):
+    repository.register(USER, SESSION)
     with pytest.raises(StorageError):
-        accounts.set_role("alice", role)
-    assert accounts.get_user("alice") == USER
+        repository.set_role("alice", role)
+    assert repository.get_user("alice") == USER
 
 
-def test_deleting_a_user_removes_its_sessions_and_nothing_else(accounts):
-    accounts.register(USER, SESSION)
-    accounts.add_session(replace(SESSION, token="second"))
+def test_deleting_a_user_removes_its_sessions_and_nothing_else(repository):
+    repository.register(USER, SESSION)
+    repository.add_session(replace(SESSION, token="second"))
     bob = replace(USER, username="bob")
     bob_session = replace(SESSION, username="bob", token="bob-token")
-    accounts.register(bob, bob_session)
-    assert accounts.delete_user("alice") is True
-    assert accounts.get_user("alice") is None
-    assert accounts.get_session("initial") is None
-    assert accounts.get_session("second") is None
-    assert accounts.list_users() == (bob,)
-    assert accounts.get_session("bob-token") == bob_session
-    assert accounts.delete_user("alice") is False
-    assert accounts.delete_user("Bob") is False
+    repository.register(bob, bob_session)
+    assert repository.delete_user("alice") is True
+    assert repository.get_user("alice") is None
+    assert repository.get_session("initial") is None
+    assert repository.get_session("second") is None
+    assert repository.list_users() == (bob,)
+    assert repository.get_session("bob-token") == bob_session
+    assert repository.delete_user("alice") is False
+    assert repository.delete_user("Bob") is False
     # The name can be registered again, with no session inherited.
-    assert accounts.register(USER, replace(SESSION, token="fresh")) is True
-    assert accounts.get_session("initial") is None
+    assert repository.register(USER, replace(SESSION, token="fresh")) is True
+    assert repository.get_session("initial") is None

@@ -21,7 +21,7 @@ class PostgresQueryLogRepository:
 
     def append(self, event):
         """An event that arrives through the port has no URL hash, score or
-        user (the import of the JSON query log, tests). Verdicts served by the
+        user. Verdicts served by the
         application are written by the verdict journal."""
         if not isinstance(event, QueryEvent):
             raise QueryLogStorageError("Invalid event")

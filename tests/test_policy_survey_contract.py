@@ -1,13 +1,13 @@
-"""The policy and survey repository ports, exercised against every adapter."""
+"""The policy and survey repository ports, exercised against the PostgreSQL adapters."""
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from app.policy.domain import PolicyRow, PolicyStorageError
-from app.policy.json_repository import JsonPolicyRepository
+from app.policy.postgres_repository import PostgresPolicyRepository
 from app.policy.service import PolicyService
 from app.survey.domain import AlreadySubmitted, SurveyStorageError, SurveySubmission
-from app.survey.json_repository import JsonSurveyRepository
+from app.survey.postgres_repository import PostgresSurveyRepository
 
 
 ACCOUNTS = ("alice", "bob", "carol")
@@ -25,24 +25,15 @@ def add_accounts(database):
                 "VALUES (%s, 'hash', 'user', now())", (name,))
 
 
-@pytest.fixture(params=["json", "postgres"])
-def surveys(request, tmp_path):
-    if request.param == "json":
-        return JsonSurveyRepository(tmp_path / "surveys.json")
-    from app.survey.postgres_repository import PostgresSurveyRepository
-
-    database = request.getfixturevalue("database")
+@pytest.fixture
+def surveys(database):
     add_accounts(database)
     return PostgresSurveyRepository(database)
 
 
-@pytest.fixture(params=["json", "postgres"])
-def policies(request, tmp_path):
-    if request.param == "json":
-        return JsonPolicyRepository(tmp_path / "policies.json")
-    from app.policy.postgres_repository import PostgresPolicyRepository
-
-    return PostgresPolicyRepository(request.getfixturevalue("database"))
+@pytest.fixture
+def policies(database):
+    return PostgresPolicyRepository(database)
 
 
 # Survey
@@ -93,9 +84,7 @@ def test_concurrent_submissions_of_one_account_keep_a_single_response(surveys):
     assert surveys.list_submissions() == (FIRST,)
 
 
-def test_postgres_responses_cannot_be_linked_to_participants(database):
-    from app.survey.postgres_repository import PostgresSurveyRepository
-
+def test_responses_cannot_be_linked_to_participants(database):
     add_accounts(database)
     surveys = PostgresSurveyRepository(database)
     surveys.submit("alice", FIRST)
@@ -109,9 +98,7 @@ def test_postgres_responses_cannot_be_linked_to_participants(database):
         assert columns("encuesta_participante") == {"id_usuario"}
 
 
-def test_postgres_rejects_a_participant_without_an_account(database):
-    from app.survey.postgres_repository import PostgresSurveyRepository
-
+def test_survey_rejects_a_participant_without_an_account(database):
     surveys = PostgresSurveyRepository(database)
     with pytest.raises(SurveyStorageError):
         surveys.submit("ghost", FIRST)
