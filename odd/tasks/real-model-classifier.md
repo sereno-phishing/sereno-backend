@@ -32,6 +32,7 @@ English technical artifacts. Test first (pytest), RED before GREEN. Conventional
 - [x] T1 Two-class port and pipeline: `Classification(verdict, score)`, URL validation and normalized-URL cache key, policy lookup in the response, history, cache and metrics on `verdict` + `policy`. Route: delegated (multi-file write).
 - [x] T2 `ModelClassifier` adapter: lazy `joblib.load`, `CLASSIFIER` (`model` | `fake`) and `MODEL_PATH` settings, model dependencies, `start.ps1` and README. Route: delegated.
 - [x] T3 Local end-to-end check with the real artifact over HTTP. Route: parent spot check.
+- [x] T4 Preload the model at startup when CLASSIFIER=model. Route: delegated.
 
 ## Checks
 `.venv/Scripts/python.exe -m pytest -q` (319 passed before this work).
@@ -64,5 +65,11 @@ Branch `feat/real-model-classifier` from `48f6909`.
 
 T3 (parent, 2026-11-13, at `935f984`): `pytest -q` 373 passed; `node --test` in `sereno-extension` 523 passed, including `tests/verdict-local-http.test.js` against this backend. Real model over HTTP (`CLASSIFIER=model`, scratch data files, port 5057): `GET /v1/model` -> `2.0.0`; legitimate and phishing verdicts from `modelo` in 23-92 ms once loaded; a repeated URL from `cache` in 12 ms; `shop.pe` -> 400; the cache file holds SHA-256 keys and domains, no URL. Observed: `https://www.mercadolibre.com.pe/ofertas` scores 0.92 (phishing), a false positive of model 2.0.0. Open: the first request pays the model load (2 s warm, about 13.5 s cold) and the extension times out at 4 s.
 
+### T4 (route: delegated writer; approved by Andres, 2026-11-13)
+- `ModelClassifier.warm_up()` loads the artifact; `create_app` starts it in a daemon thread (`background=` parameter, injectable in tests) for any classifier exposing `warm_up`, so the fake and plain injected classifiers start no thread. The startup check still raises `ModelUnavailable` before any thread starts. A failed preload logs a warning and the next request retries.
+- RED: `pytest -q tests/test_model_classifier.py` -> 8 failed, 15 passed (exit 1). GREEN: `.venv/Scripts/python.exe -m pytest -q` -> 380 passed (exit 0). The warm-up tests use a stub loader; none sleeps.
+- Real run (`CLASSIFIER=model`, scratch data, port 5057, files in the OS cache): the server answered `GET /v1/auth/session` two seconds before the log line `Model 2.0.0 loaded in 2.5 s`; the very first `POST /v1/verdict` afterwards took 0.126 s (`latencyMs` 120, `source: "modelo"`). Server stopped, port free. A cold start was not measured in this unit.
+- The app logger is raised to INFO when a warm-up is scheduled, so the "loaded" line is visible under `flask run`.
+
 ## Next step
-Manual check in Chrome by Andres against `.\start.ps1`; decide whether to warm the model at startup. The local `data/` files were not touched by this work; their legacy records upgrade on the first write.
+Manual check in Chrome by Andres against `.\start.ps1` (wait for the `Model 2.0.0 loaded` line before the first navigation; a request sent earlier waits for the load and may exceed the extension's 4 s on a cold start). The local `data/` files were not touched by this work; their legacy records upgrade on the first write.

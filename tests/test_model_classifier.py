@@ -3,6 +3,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from importlib.util import find_spec
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -136,11 +137,12 @@ def test_unknown_classifier_setting_fails_startup(config):
         create_app({**config, "CLASSIFIER": "stacking"})
 
 
-def test_model_setting_wires_the_adapter_and_loads_it_on_the_first_request(config, artifact_file,
-                                                                           monkeypatch):
+def test_model_setting_wires_the_adapter_and_an_unwarmed_model_loads_on_the_first_request(
+        config, artifact_file, monkeypatch):
     loader = CountingLoader(StubModel({"https://bad.example/login": 0.93}))
     monkeypatch.setattr(model_classifier, "load_artifact", loader)
-    app = create_app({**config, "CLASSIFIER": "model", "MODEL_PATH": str(artifact_file)})
+    app = create_app({**config, "CLASSIFIER": "model", "MODEL_PATH": str(artifact_file)},
+                     background=lambda task: None)  # the warm-up never runs
     assert loader.paths == []
     client = app.test_client()
     body = client.post("/v1/verdict", json={"url": "https://bad.example/login"}).get_json()
@@ -170,6 +172,114 @@ def test_model_that_cannot_be_loaded_is_a_server_error_on_both_routes(config, ar
                      client.get("/v1/model")):
         assert response.status_code == 500
         assert response.get_json() == {"error": "server"}
+
+
+# Warm-up: the model is preloaded in the background when the app starts
+
+class Tasks:
+    """Stands in for the thread starter: collects the tasks instead of running them."""
+
+    def __init__(self):
+        self.tasks = []
+
+    def __call__(self, task):
+        self.tasks.append(task)
+
+
+def model_app(config, artifact_file, **kwargs):
+    return create_app({**config, "CLASSIFIER": "model", "MODEL_PATH": str(artifact_file)},
+                      **kwargs)
+
+
+def test_warm_up_loads_the_artifact_so_later_use_does_not(artifact_file):
+    loader = CountingLoader()
+    classifier = ModelClassifier(artifact_file, loader)
+    classifier.warm_up()
+    classifier.warm_up()
+    classifier.classify("https://shop.pe/")
+    assert loader.paths == [artifact_file]
+
+
+def test_startup_schedules_one_warm_up_and_the_first_request_reuses_its_load(
+        config, artifact_file, monkeypatch, caplog):
+    loader = CountingLoader()
+    monkeypatch.setattr(model_classifier, "load_artifact", loader)
+    tasks = Tasks()
+    app = model_app(config, artifact_file, background=tasks)
+    assert len(tasks.tasks) == 1 and loader.paths == []
+    with caplog.at_level("INFO"):
+        tasks.tasks[0]()
+    assert loader.paths == [artifact_file]
+    finished = [record.getMessage() for record in caplog.records if "Model" in record.getMessage()]
+    assert len(finished) == 1 and "7.7.7" in finished[0] and " s" in finished[0]
+    assert app.test_client().post("/v1/verdict", json={"url": "https://shop.pe/"}).status_code == 200
+    assert loader.paths == [artifact_file]
+
+
+def test_nothing_is_warmed_for_the_fake_or_for_an_injected_classifier_without_warm_up(config):
+    class Injected:
+        version = "injected"
+
+        def classify(self, url):
+            return Classification("legitima", 0.2)
+    tasks = Tasks()
+    create_app({**config, "CLASSIFIER": "fake"}, background=tasks)
+    create_app(config, classifier=Injected(), background=tasks)
+    assert tasks.tasks == []
+
+
+def test_injected_classifier_exposing_warm_up_is_warmed(config, artifact_file):
+    loader = CountingLoader()
+    tasks = Tasks()
+    create_app(config, classifier=ModelClassifier(artifact_file, loader), background=tasks)
+    tasks.tasks[0]()
+    assert loader.paths == [artifact_file]
+
+
+def test_failed_warm_up_is_logged_and_the_next_request_retries(config, artifact_file,
+                                                               monkeypatch, caplog):
+    def broken(path):
+        raise ValueError("bad pickle")
+    monkeypatch.setattr(model_classifier, "load_artifact", broken)
+    tasks = Tasks()
+    client = model_app(config, artifact_file, background=tasks).test_client()
+    with caplog.at_level("WARNING"):
+        tasks.tasks[0]()  # must not raise: it runs in a thread nobody joins
+    assert any(record.levelname == "WARNING" and "could not be loaded" in record.getMessage()
+               for record in caplog.records)
+    monkeypatch.setattr(model_classifier, "load_artifact", CountingLoader())
+    assert client.get("/v1/model").get_json() == {"version": "7.7.7"}
+
+
+def test_default_starter_runs_the_warm_up_in_a_daemon_thread(config, artifact_file, monkeypatch):
+    loader = CountingLoader()
+    monkeypatch.setattr(model_classifier, "load_artifact", loader)
+    app = model_app(config, artifact_file)
+    thread = app.extensions["model_warm_up"]
+    assert thread.daemon
+    thread.join(timeout=10)
+    assert not thread.is_alive() and loader.paths == [artifact_file]
+
+
+def test_request_arriving_during_the_warm_up_waits_for_that_same_load(config, artifact_file,
+                                                                      monkeypatch):
+    release = Event()
+    model = StubModel()
+    paths = []
+
+    def slow(path):
+        paths.append(path)
+        assert release.wait(timeout=10)
+        return model
+    monkeypatch.setattr(model_classifier, "load_artifact", slow)
+    app = model_app(config, artifact_file)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        response = pool.submit(app.test_client().post, "/v1/verdict",
+                               json={"url": "https://shop.pe/"})
+        release.set()
+        assert response.result(timeout=10).status_code == 200
+    app.extensions["model_warm_up"].join(timeout=10)
+    assert paths == [artifact_file]
 
 
 # Integration: the real artifact (loads the ML libraries; takes several seconds)

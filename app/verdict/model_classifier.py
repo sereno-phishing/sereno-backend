@@ -2,7 +2,8 @@
 package (`sereno_model.models.stacking.StackingModel`, saved with joblib).
 
 Nothing heavy happens at import or construction: the artifact and the ML
-libraries it needs are loaded on first use, once, under a lock."""
+libraries it needs are loaded once, under a lock, by warm_up() (the app calls
+it in the background at startup) or else on first use."""
 from importlib.util import find_spec
 from pathlib import Path
 from threading import Lock
@@ -43,6 +44,11 @@ class ModelClassifier:
         if missing:
             raise ModelUnavailable(
                 f"Model dependencies not installed ({', '.join(missing)}). {INSTALL_HINT}")
+
+    def warm_up(self):
+        """Loads the artifact now instead of on first use. Safe to call from
+        another thread: a request arriving meanwhile waits for this same load."""
+        self._loaded()
 
     @property
     def version(self):
