@@ -15,7 +15,8 @@ from app.verdict.classifier import Classification
 from app.verdict.fake_classifier import FakeClassifier
 from app.verdict.journal import ServedVerdict
 from app.verdict.postgres_journal import PostgresVerdictJournal
-from app.verdict.service import ClassifierError, InvalidUrl, VerdictService
+from app.verdict.service import (CACHE_PAUSE_SECONDS, ClassifierError, InvalidUrl,
+                                 VerdictService)
 from app.verdict.url import cache_key, normalize
 from conftest import set_role
 
@@ -278,6 +279,30 @@ def test_a_cache_that_cannot_be_written_still_serves_the_verdict_and_is_logged_o
     # Nothing was cached: the next request asks the model again.
     assert service.evaluate(OUTAGE_URL, None)["source"] == "modelo"
     assert len(classifier.calls) == 2
+
+
+def test_after_a_failure_the_cache_is_left_alone_for_a_while_then_tried_again(
+        make_service, monkeypatch, caplog):
+    """A stopped Redis can take seconds to fail: only one request per pause
+    waits for it, the others go straight to the model."""
+    now = [100.0]
+    monkeypatch.setattr("app.verdict.service.monotonic", lambda: now[0])
+    classifier = SpyClassifier()
+    service, cache = make_service(classifier)
+    service.cache = broken = BrokenCache(cache, "lookup")
+    service.evaluate(OUTAGE_URL, None)
+    now[0] += CACHE_PAUSE_SECONDS - 0.1
+    with caplog.at_level("WARNING"):
+        paused = service.evaluate(OUTAGE_URL, None)
+    assert paused["source"] == "modelo" and len(classifier.calls) == 2
+    assert broken.calls == ["lookup"]
+    [warning] = outage_warnings(caplog)
+    assert "paused" in warning.getMessage() and "shop.pe" in warning.getMessage()
+    now[0] += 0.1
+    broken.failing = ()
+    assert service.evaluate(OUTAGE_URL, None)["source"] == "modelo"
+    assert broken.calls == ["lookup", "lookup", "store"]
+    assert service.evaluate(OUTAGE_URL, None)["source"] == "cache"
 
 
 def test_a_classifier_failure_during_a_cache_outage_is_still_a_classifier_error(make_service):

@@ -1,5 +1,5 @@
 import logging
-from time import perf_counter
+from time import monotonic, perf_counter
 
 from ..cache.domain import CacheStorageError
 from ..cache.service import CacheService
@@ -13,6 +13,9 @@ __all__ = ["ClassifierError", "InvalidUrl", "VerdictService"]
 
 logger = logging.getLogger(__name__)
 MAX_DOMAIN_LENGTH = 253
+# After a cache failure the cache is left alone this long: an unreachable
+# Redis can take seconds to fail, and only one request per pause waits for it.
+CACHE_PAUSE_SECONDS = 10
 
 
 class ClassifierError(Exception):
@@ -26,8 +29,8 @@ class VerdictService:
     domain policy is read on every request and a policy edit never leaves a
     stale answer. A cache that cannot be read or written never fails the
     verdict (RF-20): the classifier answers, the answer says "modelo" and the
-    incident is logged; the cache is used again as soon as it responds. The
-    policy lookup falls back to the default policy. Every
+    incident is logged; after a failure the cache is skipped for
+    CACHE_PAUSE_SECONDS, then tried again. The policy lookup falls back to the default policy. Every
     served verdict is recorded in the journal, which backs the signed-in
     user's history and the metrics; that record is a side effect that never
     fails the verdict."""
@@ -39,6 +42,7 @@ class VerdictService:
         self.journal = journal
         self.timer = timer
         self.policies = policies
+        self._cache_paused_until = 0.0
 
     def model_version(self):
         try:
@@ -55,10 +59,13 @@ class VerdictService:
         key = cache_key(parts.normalized)
         started = self.timer()
         cached, outage = None, None
-        try:
-            cached = self.cache.lookup(key)
-        except CacheStorageError as error:
-            outage = ("read", error)
+        if monotonic() < self._cache_paused_until:
+            outage = ("paused", f"not retried for {CACHE_PAUSE_SECONDS} s after a failure")
+        else:
+            try:
+                cached = self.cache.lookup(key)
+            except CacheStorageError as error:
+                outage = ("read", error.__cause__ or error)
         if cached is not None:
             verdict, score, source = cached.verdict, cached.score, "cache"
         else:
@@ -67,14 +74,16 @@ class VerdictService:
                 try:
                     self.cache.store(key, domain, result.verdict, result.score)
                 except CacheStorageError as error:
-                    outage = ("write", error)
+                    outage = ("write", error.__cause__ or error)
             verdict, score, source = result.verdict, result.score, "modelo"
         if outage:
             # Once per request, with the hash and the domain, never the URL.
-            operation, error = outage
+            operation, cause = outage
+            if operation != "paused":
+                self._cache_paused_until = monotonic() + CACHE_PAUSE_SECONDS
             logger.warning(
-                "Cache unavailable on %s; verdict served by the model "
-                "(domain=%s, urlHash=%s): %s", operation, domain, key, error.__cause__ or error)
+                "Cache unavailable (%s); verdict served by the model "
+                "(domain=%s, urlHash=%s): %s", operation, domain, key, cause)
         policy = self._policy(domain)
         latency = max(0, round((self.timer() - started) * 1000))
         answer = {"domain": domain, "verdict": verdict, "policy": policy, "score": score,

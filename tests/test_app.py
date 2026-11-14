@@ -147,12 +147,23 @@ def test_redis_being_down_still_serves_the_verdict_with_the_model(config, monkey
 
 
 def test_the_cache_is_used_again_once_redis_is_back(config, monkeypatch):
+    """The same Redis client reconnects by itself, after the pause that
+    follows a failure."""
+    from app.verdict import service
+
+    def sources(count):
+        return [client.post("/v1/verdict", json={"url": SECRET_URL}).get_json()["source"]
+                for _ in range(count)]
+
+    now = [100.0]
     client = create_app(config).test_client()
-    redis_down(monkeypatch)
-    assert client.post("/v1/verdict", json={"url": SECRET_URL}).get_json()["source"] == "modelo"
-    monkeypatch.undo()
-    assert [client.post("/v1/verdict", json={"url": SECRET_URL}).get_json()["source"]
-            for _ in range(2)] == ["modelo", "cache"]
+    with monkeypatch.context() as outage:
+        redis_down(outage)
+        monkeypatch.setattr(service, "monotonic", lambda: now[0])
+        assert sources(1) == ["modelo"]
+    assert sources(2) == ["modelo", "modelo"]
+    now[0] += service.CACHE_PAUSE_SECONDS
+    assert sources(2) == ["modelo", "cache"]
 
 
 def test_redis_being_down_still_reports_cache_down_on_the_cache_routes(
