@@ -207,14 +207,22 @@ def test_settings_and_entries_are_shared_by_every_adapter_instance(repository, d
     assert recreated.lookup("key-safe").score == 0.04
 
 
-def test_cache_storage_failure_reports_cache_down(config, monkeypatch):
+@pytest.mark.parametrize("operation, method, path, body", [
+    ("settings", "get", "/v1/cache", None),
+    ("set_ttl", "put", "/v1/cache/ttl", {"ttlPhishingDays": 7, "ttlLegitHours": 24}),
+    ("invalidate", "post", "/v1/cache/invalidations", {"domain": "bad.net"}),
+])
+def test_cache_storage_failure_reports_cache_down(config, monkeypatch, operation, method, path,
+                                                  body):
+    """The administration routes are about the cache itself: unlike the
+    verdict route, they do not hide that it is down."""
     def fail(*arguments):
         raise CacheStorageError("Cache unavailable")
 
     client = create_app(config).test_client()
     make_admin(client, config)
-    monkeypatch.setattr(RedisCacheRepository, "settings", fail)
-    response = client.get("/v1/cache")
+    monkeypatch.setattr(RedisCacheRepository, operation, fail)
+    response = getattr(client, method)(path, json=body)
     assert response.status_code == 503
     assert response.get_json() == {"error": "cache_down"}
 

@@ -6,6 +6,7 @@ import pytest
 from app import create_app
 from app.auth.domain import StorageError
 from app.auth.postgres_repository import PostgresAuthRepository
+from app.cache.domain import CacheStorageError
 from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
 from app.metrics.domain import QueryLogStorageError
@@ -78,6 +79,32 @@ class SpyJournal:
         if self.fail:
             raise QueryLogStorageError("down")
         self.records.append((username, served))
+
+
+class BrokenCache:
+    """A cache service whose storage fails on the named operations."""
+
+    def __init__(self, cache, *failing):
+        self.cache = cache
+        self.failing = failing
+        self.calls = []
+
+    def _call(self, name, *arguments):
+        self.calls.append(name)
+        if name in self.failing:
+            raise CacheStorageError("Cache unavailable") from ConnectionError("redis refused")
+        return getattr(self.cache, name)(*arguments)
+
+    def lookup(self, key):
+        return self._call("lookup", key)
+
+    def store(self, *arguments):
+        return self._call("store", *arguments)
+
+
+def outage_warnings(caplog):
+    return [record for record in caplog.records
+            if record.name == "app.verdict.service" and "Cache unavailable" in record.getMessage()]
 
 
 @pytest.fixture
@@ -206,6 +233,68 @@ def test_classifier_failure_or_bad_output_is_a_classifier_error(make_service, re
     assert cache.lookup(cache_key(normalize("https://shop.pe"))) is None
 
 
+# Cache outage (RF-20): the verdict is still served, by the model
+
+OUTAGE_URL = "https://www.Shop.pe/secret-path?token=abc"
+
+
+def test_a_cache_that_cannot_be_read_is_answered_by_the_model_and_logged_once(
+        make_service, caplog):
+    classifier, journal = SpyClassifier(), SpyJournal()
+    service, cache = make_service(classifier, journal)
+    service.cache = broken = BrokenCache(cache, "lookup", "store")
+    with caplog.at_level("WARNING"):
+        answer = service.evaluate(OUTAGE_URL, "alice")
+    assert answer == {"domain": "shop.pe", "verdict": "phishing", "policy": "advertencia",
+                      "score": 0.81, "source": "modelo", "latencyMs": 42}
+    assert classifier.calls == [OUTAGE_URL]
+    # No second attempt on a store that just failed.
+    assert broken.calls == ["lookup"]
+    key = cache_key(normalize(OUTAGE_URL))
+    assert journal.records == [
+        ("alice", ServedVerdict(urlHash=key, modelVersion="9.9", **answer))]
+    [warning] = outage_warnings(caplog)
+    assert warning.levelname == "WARNING"
+    message = warning.getMessage()
+    assert "read" in message and "shop.pe" in message and key in message
+    assert "redis refused" in message
+    for fragment in ("secret-path", "token=abc", "https://", "www."):
+        assert fragment not in message
+
+
+def test_a_cache_that_cannot_be_written_still_serves_the_verdict_and_is_logged_once(
+        make_service, caplog):
+    classifier, journal = SpyClassifier(), SpyJournal()
+    service, cache = make_service(classifier, journal)
+    service.cache = broken = BrokenCache(cache, "store")
+    with caplog.at_level("WARNING"):
+        answer = service.evaluate(OUTAGE_URL, None)
+    assert (answer["verdict"], answer["score"], answer["source"]) == ("phishing", 0.81, "modelo")
+    assert broken.calls == ["lookup", "store"]
+    assert journal.records[0][1].modelVersion == "9.9"
+    [warning] = outage_warnings(caplog)
+    message = warning.getMessage()
+    assert "write" in message and "shop.pe" in message and "secret-path" not in message
+    # Nothing was cached: the next request asks the model again.
+    assert service.evaluate(OUTAGE_URL, None)["source"] == "modelo"
+    assert len(classifier.calls) == 2
+
+
+def test_a_classifier_failure_during_a_cache_outage_is_still_a_classifier_error(make_service):
+    service, cache = make_service(SpyClassifier(RuntimeError("boom")))
+    service.cache = BrokenCache(cache, "lookup", "store")
+    with pytest.raises(ClassifierError):
+        service.evaluate("https://shop.pe", None)
+
+
+def test_a_working_cache_logs_no_outage(make_service, caplog):
+    service, _ = make_service(SpyClassifier())
+    with caplog.at_level("WARNING"):
+        service.evaluate("https://shop.pe/a", None)
+        service.evaluate("https://shop.pe/a", None)
+    assert outage_warnings(caplog) == []
+
+
 # HTTP
 
 def register(client, username="alice"):
@@ -297,11 +386,17 @@ def test_a_session_storage_failure_serves_the_verdict_as_anonymous(config, monke
     assert client.get("/v1/history").get_json() == {"entries": []}
 
 
-def test_an_unreachable_database_reports_cache_down(config, database_down):
-    """The cache reads its TTL settings from PostgreSQL: without it no verdict
-    can be cached or looked up."""
+def test_an_unreachable_database_still_serves_the_verdict(config, database_down, caplog):
+    """The cache reads its TTL settings from PostgreSQL: without it nothing
+    can be cached, and neither the policy nor the query can be read or
+    recorded, but the model still answers (this was 503 cache_down before RF-20)."""
     client = create_app(config).test_client()
     database_down()
-    response = client.post("/v1/verdict", json={"url": "https://x.pe"})
-    assert response.status_code == 503
-    assert response.get_json() == {"error": "cache_down"}
+    with caplog.at_level("WARNING"):
+        response = client.post("/v1/verdict", json={"url": "https://x.pe"})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert (body["verdict"], body["policy"], body["source"]) == (
+        "legitima", "advertencia", "modelo")
+    [warning] = outage_warnings(caplog)
+    assert "write" in warning.getMessage()

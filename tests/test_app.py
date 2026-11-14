@@ -3,6 +3,7 @@ one of them cannot be reached."""
 import pytest
 
 from app import create_app
+from app.storage.postgres import Database
 
 
 SECRET_URL = "https://www.pago-servicios-linea.net/secret-path?token=abc"
@@ -111,19 +112,57 @@ def test_no_url_reaches_a_table_or_a_redis_key(config, database, redis_client):
     assert "pago-servicios-linea.net" in stored and "pago-servicios-linea.net" in cached
 
 
-def test_redis_being_down_reports_cache_down_and_spares_the_rest(config, monkeypatch):
+def redis_down(monkeypatch):
     import redis
-
-    client = create_app(config).test_client()
-    register(client)
 
     def down(*arguments, **keywords):
         raise redis.ConnectionError("down")
     monkeypatch.setattr(redis.Redis, "execute_command", down)
-    response = client.post("/v1/verdict", json={"url": SECRET_URL})
+    monkeypatch.setattr(redis.client.Pipeline, "execute", down)
+
+
+def test_redis_being_down_still_serves_the_verdict_with_the_model(config, monkeypatch, caplog):
+    """RF-20 / CP-12. Before it, this request answered 503 cache_down."""
+    client = create_app(config).test_client()
+    register(client)
+    redis_down(monkeypatch)
+    with caplog.at_level("WARNING"):
+        response = client.post("/v1/verdict", json={"url": SECRET_URL})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert set(body) == {"domain", "verdict", "policy", "score", "source", "latencyMs"}
+    assert (body["domain"], body["verdict"], body["source"]) == (
+        "pago-servicios-linea.net", "phishing", "modelo")
+    warnings = [record.getMessage() for record in caplog.records
+                if "Cache unavailable" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "pago-servicios-linea.net" in warnings[0] and "secret-path" not in warnings[0]
+    # The query is recorded as what it was: answered by the model, a MISS.
+    [entry] = client.get("/v1/history").get_json()["entries"]
+    assert entry["source"] == "modelo"
+    with Database.shared(config["DATABASE_URL"]).transaction(RuntimeError) as connection:
+        assert connection.execute(
+            "SELECT origen, (SELECT count(*) FROM prediccion) FROM consulta"
+        ).fetchall() == [("MISS", 1)]
+
+
+def test_the_cache_is_used_again_once_redis_is_back(config, monkeypatch):
+    client = create_app(config).test_client()
+    redis_down(monkeypatch)
+    assert client.post("/v1/verdict", json={"url": SECRET_URL}).get_json()["source"] == "modelo"
+    monkeypatch.undo()
+    assert [client.post("/v1/verdict", json={"url": SECRET_URL}).get_json()["source"]
+            for _ in range(2)] == ["modelo", "cache"]
+
+
+def test_redis_being_down_still_reports_cache_down_on_the_cache_routes(
+        config, database, monkeypatch):
+    client = create_app(config).test_client()
+    make_admin(client, database)
+    redis_down(monkeypatch)
+    response = client.post("/v1/cache/invalidations", json={"domain": "bad.net"})
     assert response.status_code == 503
     assert response.get_json() == {"error": "cache_down"}
-    assert client.get("/v1/history").get_json() == {"entries": []}
 
 
 def test_an_unreachable_database_prevents_startup(redis_url):
