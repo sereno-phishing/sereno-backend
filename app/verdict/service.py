@@ -4,6 +4,7 @@ from time import perf_counter
 from ..cache.service import CacheService
 from ..policy.domain import DEFAULT_POLICY
 from .classifier import VERDICTS, Classification, Classifier
+from .journal import ServedVerdict
 from .url import InvalidUrl, cache_key, parse, site_domain
 
 
@@ -25,16 +26,18 @@ class VerdictService:
     stale answer. Cache storage failures propagate as CacheStorageError
     (cache_down). The policy lookup falls back to the default policy; the
     signed-in user's history and the metrics query log are side effects that
-    never fail the verdict."""
+    never fail the verdict. With a journal, one record per served verdict
+    replaces those two writes (the store derives history and metrics from it)."""
 
     def __init__(self, cache: CacheService, classifier: Classifier, history, timer=perf_counter,
-                 query_log=None, policies=None):
+                 query_log=None, policies=None, journal=None):
         self.cache = cache
         self.classifier = classifier
         self.history = history
         self.timer = timer
         self.query_log = query_log
         self.policies = policies
+        self.journal = journal
 
     def model_version(self):
         try:
@@ -61,11 +64,19 @@ class VerdictService:
         latency = max(0, round((self.timer() - started) * 1000))
         answer = {"domain": domain, "verdict": verdict, "policy": policy, "score": score,
                   "source": source, "latencyMs": latency}
+        if self.journal is not None:
+            self._side_effect("Query not recorded", self._journal, username, key, answer)
+            return answer
         if self.query_log is not None:
             self._side_effect("Query not logged", self.query_log.record, dict(answer))
         if username:
             self._side_effect("History not recorded", self.history.record, username, dict(answer))
         return answer
+
+    def _journal(self, username, key, answer):
+        version = self.classifier.version if answer["source"] == "modelo" else None
+        self.journal.record(username or None,
+                            ServedVerdict(urlHash=key, modelVersion=version, **answer))
 
     def _classify(self, url):
         try:
