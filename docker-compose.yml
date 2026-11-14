@@ -1,5 +1,7 @@
-# Local development services of the backend: PostgreSQL holds the
-# relational data and Redis the verdict cache. Both listen on the loopback
+# Local services of the backend: PostgreSQL holds the relational data and
+# Redis the verdict cache; a plain "docker compose up" starts these two. The
+# evaluation server runs on the host (start.ps1) or, with the "server"
+# profile, in a third container. Every port is published on the loopback
 # interface only. Credentials are development-only; override them in a
 # Git-ignored .env file (variables and defaults in the README), never reuse them
 # elsewhere.
@@ -33,6 +35,38 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # docker compose --profile server up -d --build --wait
+  server:
+    profiles: ["server"]
+    build:
+      context: .
+      # The sereno_model package and the trained artifact live in the sibling
+      # repository; the Dockerfile copies them from this named context.
+      additional_contexts:
+        model: ../sereno-model
+    environment:
+      CLASSIFIER: model
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sereno}:${POSTGRES_PASSWORD:-sereno}@postgres:5432/${POSTGRES_DB:-sereno}
+      REDIS_URL: redis://redis:6379/0
+    # The only address the browser extension may call.
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Answers once the model is loaded.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/v1/model', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+      start_interval: 2s
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
 
 volumes:
   postgres-data:

@@ -1,0 +1,19 @@
+# Only requirements*.txt and app/ go into the image.
+.git
+.gitignore
+.venv
+.env
+.env.*
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+tests
+odd
+.atl
+.claude
+.codegraph
+*.md
+*.ps1
+Dockerfile
+.dockerignore
+docker-compose.yml

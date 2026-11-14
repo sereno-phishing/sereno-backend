@@ -3,3 +3,4 @@ Werkzeug==3.1.9
 psycopg[binary,pool]==3.3.9
 redis==8.1.0
 pytest==8.4.2
+gunicorn==27.0.1; sys_platform != "win32"

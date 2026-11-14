@@ -28,7 +28,7 @@ def test_compose_services_are_pinned_and_listen_on_loopback_only():
     assert len(images) == 2
     assert all(re.fullmatch(r"(postgres|redis):\d+\.\d+[\w.-]*", image) for image in images)
     ports = re.findall(r'^\s+- "(\S+:\d+)"$', text, flags=re.MULTILINE)
-    assert len(ports) == 2 and all(port.startswith("127.0.0.1:") for port in ports)
+    assert len(ports) == 3 and all(port.startswith("127.0.0.1:") for port in ports)
 
 
 def test_schema_creates_the_add_tables_and_is_idempotent(database):
