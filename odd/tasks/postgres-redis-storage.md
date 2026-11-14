@@ -47,4 +47,4 @@ Branch `feat/postgres-redis-storage` from `366152e`.
 T6 (parent, 2026-11-13, at `7bca29a`): `pytest -q` 489 passed with the containers up; `node --test` in `sereno-extension` 523 passed. Real model on PostgreSQL and Redis (`CLASSIFIER=model`, `STORAGE_DRIVER=postgres`, throwaway database `sereno_e2e` and Redis index 14, port 5058, all removed afterwards): model loaded in 2.6 s, `GET /v1/model` -> `2.0.0`; two MISS verdicts in 26-126 ms and a HIT in 3 ms; history listed two entries and was empty after `DELETE /v1/history`, with the three `consulta` rows kept without a user; two `prediccion` rows; `version_modelo` holds `2.0.0`; Redis holds two hash keys and two `dominio:` sets; no URL text in `pg_dump` or the server log. Observed: `https://www.google.com/search?q=...` scores 0.79 (phishing), a false positive of model 2.0.0. Not done: `.env.example` (writing `.env*` files is denied in this session).
 
 ## Next step
-T6 (parent): end-to-end check over HTTP with the real model on PostgreSQL and Redis.
+Andres: run the JSON import if the local data is wanted, check in Chrome against `.\start.ps1`, then decide the merge to `main`.
