@@ -116,7 +116,7 @@ def test_smoke_persisted_session_and_revocation(settings):
 
 def test_unknown_driver_fails_closed(settings):
     with pytest.raises(ValueError, match="Unsupported storage driver"):
-        create_app({**settings, "STORAGE_DRIVER": "postgres"})
+        create_app({**settings, "STORAGE_DRIVER": "sqlite"})
 
 
 @pytest.mark.parametrize("content", ["broken", "[]", '{}', '{"users": {}, "sessions": []}',

@@ -6,6 +6,9 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 CLASSIFIERS = ("model", "fake")
 # The artifact trained in the sibling sereno-model repository.
 DEFAULT_MODEL_PATH = "../sereno-model/artifacts/2.0.0/model.joblib"
+# The services of docker-compose.yml with their development-only defaults.
+DEFAULT_DATABASE_URL = "postgresql://sereno:sereno@127.0.0.1:5432/sereno"
+DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 
 
 def settings():
@@ -13,7 +16,11 @@ def settings():
     # loads the model artifact unless asked to; start.ps1 asks for the model.
     return {"CLASSIFIER": os.environ.get("CLASSIFIER", "fake"),
             "MODEL_PATH": os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH),
+            # "json" keeps a bare start and the test suite self-contained;
+            # "postgres" stores in PostgreSQL and caches verdicts in Redis.
             "STORAGE_DRIVER": os.environ.get("STORAGE_DRIVER", "json"),
+            "DATABASE_URL": os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
+            "REDIS_URL": os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
             "DATA_FILE": os.environ.get("DATA_FILE", "data/db.json"),
             "SURVEY_DATA_FILE": os.environ.get("SURVEY_DATA_FILE"),
             "POLICY_DATA_FILE": os.environ.get("POLICY_DATA_FILE"),

@@ -1,0 +1,38 @@
+# Local development services for STORAGE_DRIVER=postgres: PostgreSQL holds the
+# relational data and Redis the verdict cache. Both listen on the loopback
+# interface only. Credentials are development-only; override them in a
+# Git-ignored .env file (variables and defaults in the README), never reuse them
+# elsewhere.
+name: sereno
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sereno}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sereno}
+      POSTGRES_DB: ${POSTGRES_DB:-sereno}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    # The cache is disposable: no snapshots, no append-only file, no volume.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:
