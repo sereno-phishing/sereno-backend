@@ -7,10 +7,14 @@ from app.auth.domain import Session, StorageError, User
 from app.auth.json_repository import JsonAuthRepository
 
 
-@pytest.fixture(params=["json", "memory"])
+@pytest.fixture(params=["json", "memory", "postgres"])
 def repository(request, tmp_path):
     if request.param == "json":
         return JsonAuthRepository(tmp_path / "db.json")
+    if request.param == "postgres":
+        from app.auth.postgres_repository import PostgresAuthRepository
+
+        return PostgresAuthRepository(request.getfixturevalue("database"))
     from app.auth.memory_repository import MemoryAuthRepository
 
     return MemoryAuthRepository()
