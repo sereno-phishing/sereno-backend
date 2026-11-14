@@ -48,6 +48,27 @@ A role change applies to the sessions the account already has at their next requ
 
 Public registration always creates a `user`, even if the request supplies a role. There is no promotion endpoint in the product API. To create an administrator for local development, use the development tools page above, or run `docker compose exec postgres psql -U sereno -d sereno -c "UPDATE usuario SET rol = 'admin' WHERE nombre = 'alice';"` (no restart needed). The only valid stored roles are `user` and `admin`; the database rejects any other value.
 
+## Run the three containers
+
+The evaluation server can also run in a container, next to PostgreSQL and Redis: the three containers of the architecture. From `sereno-backend/`, with the sibling `sereno-model` repository in place and nothing else listening on port 5000 (stop `start.ps1` first):
+
+```powershell
+docker compose --profile server up -d --build --wait   # build the image, start the three, wait until healthy
+docker compose --profile server ps                     # postgres, redis and server, all "healthy"
+docker compose logs server                             # "Model 2.0.0 loaded in N s", then the requests
+docker compose --profile server stop                   # stop the three; "start" or "up" brings them back
+docker compose --profile server down                   # remove the containers; the database volume stays
+```
+
+Never add `-v` to `down` unless the development database is meant to be deleted. The `server` service sits behind the compose profile `server`, so a plain `docker compose up -d --wait` (what `start.ps1` and the tests run) still starts PostgreSQL and Redis only; the host flow and the container are alternatives for the same address, `http://127.0.0.1:5000`, not to be run together.
+
+- **Image** (`Dockerfile`, `python:3.12.10-slim-bookworm`): the pins of `requirements.txt` and `requirements-model.txt`, the `sereno_model` package and artifact `2.0.0`, and `app/`. The package and the artifact come from `../sereno-model` through the named build context `model` (`additional_contexts` in `docker-compose.yml`); nothing of that repository is copied into this one. The image keeps the layout of the host (`/srv/sereno-backend` beside `/srv/sereno-model`), so the default `MODEL_PATH` applies. It holds no credential and no `.env` file (`.dockerignore`).
+- **Server**: gunicorn (pinned in `requirements.txt`; the marker keeps it out of the Windows virtual environment, where it cannot run) calling `app:create_app()`, as the unprivileged user `sereno` (uid 10001), with all capabilities dropped. One worker with eight threads: each worker loads its own copy of the model, and `WEB_CONCURRENCY` sets another count.
+- **Settings**: the same variables as on the host (`app/config.py`), given by compose: `CLASSIFIER=model`, `DATABASE_URL` and `REDIS_URL` pointing at the `postgres` and `redis` services with the credentials of the compose file (or of `.env`).
+- **Tables**: as on the host, `create_app` applies the idempotent `app/storage/schema.sql` at startup; there is no separate migration step.
+- **Health**: the container is healthy once `GET /v1/model` answers, that is, once the model is loaded; it starts only after PostgreSQL and Redis are healthy.
+- **Network**: port 5000 is published on `127.0.0.1` only. `AUTH_LOCAL_HTTP` is not set in the container: behind Docker's port publishing the peer address is the bridge gateway, not loopback, so that mode would answer 403 to every request. The container therefore uses the secure defaults (`Secure`, `SameSite=None` cookie, see "Cookie and browser boundary") and relies on the loopback-only port. `DEV_TOOLS` is not set either: `/dev/users` exists only in the host flow.
+
 ## HTTP contract
 
 | Endpoint | Success | Failure |
