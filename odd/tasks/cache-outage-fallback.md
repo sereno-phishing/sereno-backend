@@ -46,7 +46,7 @@ Branch `feat/cache-outage-fallback` from `2a716f6` (`feat/server-container`).
 - The extension test above must be updated in `sereno-extension` (out of scope here), and its README still lists `503 cache_down` for `POST /v1/verdict`. The extension keeps the `cache_down` reason for the cache routes.
 - One request per pause still waits about 4 s against a stopped compose Redis, the extension's own limit, so that request can end as `timeout` there. The Redis client is built in `app/storage/factory.py`, outside this change; a shorter wait needs a decision there or a background probe.
 - An unreadable entry pauses the cache for every URL for 10 s and is not rewritten until it expires or its domain is invalidated; each request for it is answered by the model with a warning.
-- The checks left nine anonymous `consulta` rows in the development database, domains `cp12-outage-*.example.net` and `cp12-recovery-*.example.net`.
+- The three check runs left 13 anonymous `consulta` rows in the development database, domains `cp12-outage-*.example.net` and `cp12-recovery-*.example.net`.
 
 ## Next step
 Andrés: review the branch, decide the merge order with `feat/server-container`, and update the extension contract test and README.
