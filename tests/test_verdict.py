@@ -292,6 +292,7 @@ def test_after_a_failure_the_cache_is_left_alone_for_a_while_then_tried_again(
     service.cache = broken = BrokenCache(cache, "lookup")
     service.evaluate(OUTAGE_URL, None)
     now[0] += CACHE_PAUSE_SECONDS - 0.1
+    caplog.clear()
     with caplog.at_level("WARNING"):
         paused = service.evaluate(OUTAGE_URL, None)
     assert paused["source"] == "modelo" and len(classifier.calls) == 2
