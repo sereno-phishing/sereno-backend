@@ -268,10 +268,8 @@ def verdict_routes(auth_service, verdict_service):
     def invalid(error):
         return jsonify(error="invalid"), 400
 
-    @routes.errorhandler(CacheStorageError)
-    def cache_down(error):
-        return jsonify(error="cache_down"), 503
-
+    # No cache_down here: the verdict service answers with the model when the
+    # cache is unavailable (RF-20).
     @routes.errorhandler(ClassifierError)
     def unavailable(error):
         return jsonify(error="server"), 500

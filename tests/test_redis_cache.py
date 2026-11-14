@@ -94,6 +94,9 @@ class Down:
 
 
 def test_redis_being_down_is_a_cache_storage_error(database):
+    """Still the contract of the cache port after RF-20: the adapter reports
+    the outage, the cache routes answer cache_down, and the verdict service
+    is the one that falls back to the model (tests/test_verdict.py)."""
     from app.cache.redis_repository import RedisCacheRepository
 
     service = CacheService(RedisCacheRepository(Down(), database), lambda: START)

@@ -1,6 +1,7 @@
 import logging
 from time import perf_counter
 
+from ..cache.domain import CacheStorageError
 from ..cache.service import CacheService
 from ..policy.domain import DEFAULT_POLICY
 from .classifier import VERDICTS, Classification, Classifier
@@ -23,8 +24,10 @@ class VerdictService:
     TTL, invalidations) and with the classifier on a miss. The cache is keyed
     by the hash of the normalized URL and stores the model class, so the
     domain policy is read on every request and a policy edit never leaves a
-    stale answer. Cache storage failures propagate as CacheStorageError
-    (cache_down). The policy lookup falls back to the default policy. Every
+    stale answer. A cache that cannot be read or written never fails the
+    verdict (RF-20): the classifier answers, the answer says "modelo" and the
+    incident is logged; the cache is used again as soon as it responds. The
+    policy lookup falls back to the default policy. Every
     served verdict is recorded in the journal, which backs the signed-in
     user's history and the metrics; that record is a side effect that never
     fails the verdict."""
@@ -51,13 +54,27 @@ class VerdictService:
             raise InvalidUrl
         key = cache_key(parts.normalized)
         started = self.timer()
-        cached = self.cache.lookup(key)
+        cached, outage = None, None
+        try:
+            cached = self.cache.lookup(key)
+        except CacheStorageError as error:
+            outage = ("read", error)
         if cached is not None:
             verdict, score, source = cached.verdict, cached.score, "cache"
         else:
             result = self._classify(url)
-            self.cache.store(key, domain, result.verdict, result.score)
+            if outage is None:  # no second wait on a cache that just failed
+                try:
+                    self.cache.store(key, domain, result.verdict, result.score)
+                except CacheStorageError as error:
+                    outage = ("write", error)
             verdict, score, source = result.verdict, result.score, "modelo"
+        if outage:
+            # Once per request, with the hash and the domain, never the URL.
+            operation, error = outage
+            logger.warning(
+                "Cache unavailable on %s; verdict served by the model "
+                "(domain=%s, urlHash=%s): %s", operation, domain, key, error.__cause__ or error)
         policy = self._policy(domain)
         latency = max(0, round((self.timer() - started) * 1000))
         answer = {"domain": domain, "verdict": verdict, "policy": policy, "score": score,
