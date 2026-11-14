@@ -5,7 +5,7 @@ with the domain, never the URL. Settings and invalidations mirror the
 extension's administration/domain/verdict-cache.js; domain_of mirrors the mock
 backend's domainOf (platform/providers/mock.js)."""
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
@@ -84,19 +84,18 @@ class CachedVerdict:
 
 @dataclass(frozen=True)
 class CacheState:
+    """The administration view of the cache: the TTL of each class and the
+    manual invalidations, newest first. The entries are not part of it."""
+
     ttlPhishingDays: int = DEFAULT_TTL_PHISHING_DAYS
     ttlLegitHours: int = DEFAULT_TTL_LEGIT_HOURS
     invalidations: tuple = ()
-    entries: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if (not _positive(self.ttlPhishingDays, MAX_TTL_PHISHING_DAYS)
                 or not _positive(self.ttlLegitHours, MAX_TTL_LEGIT_HOURS)):
             raise InvalidCache
         if any(not isinstance(item, Invalidation) for item in self.invalidations):
-            raise InvalidCache
-        if any(not isinstance(key, str) or not isinstance(value, CachedVerdict)
-               for key, value in self.entries.items()):
             raise InvalidCache
 
     def public(self):
@@ -110,22 +109,3 @@ class CacheState:
 
     def is_fresh(self, entry, now):
         return now - entry.cachedAt < self.ttl_for(entry.verdict)
-
-    def with_ttl(self, days, hours):
-        return replace(self, ttlPhishingDays=days, ttlLegitHours=hours)
-
-    def with_invalidation(self, domain, day):
-        """Drops every entry of the domain: several URLs may share it."""
-        entries = {key: value for key, value in self.entries.items() if value.domain != domain}
-        invalidation = Invalidation(domain, day)
-        return replace(self, invalidations=(invalidation, *self.invalidations), entries=entries)
-
-    def with_entry(self, key, entry, now):
-        entries = {name: value for name, value in self.entries.items()
-                   if self.is_fresh(value, now)}
-        entries[key] = entry
-        invalidations = tuple(
-            replace(item, verdict=entry.verdict)
-            if item.domain == entry.domain and item.verdict is None else item
-            for item in self.invalidations)
-        return replace(self, invalidations=invalidations, entries=entries)

@@ -1,4 +1,4 @@
-from ..storage.consulta import SOURCE_OF_ORIGIN, insert_consulta
+from ..storage.consulta import SOURCE_OF_ORIGIN
 from .domain import CAPACITY, InvalidQueryEvent, QueryEvent, QueryLogStorageError
 
 
@@ -12,24 +12,13 @@ _LIST = """
 
 
 class PostgresQueryLogRepository:
-    """QueryLogRepository over every `consulta` row, with or without a user.
-    Nothing is trimmed from the table; the log is its newest `capacity` rows."""
+    """QueryLogRepository over every `consulta` row, with or without a user;
+    the verdict journal writes them. Nothing is trimmed from the table; the
+    log is its newest `capacity` rows."""
 
     def __init__(self, database, capacity=CAPACITY):
         self.database = database
         self.capacity = capacity
-
-    def append(self, event):
-        """An event that arrives through the port has no URL hash, score or
-        user. Verdicts served by the
-        application are written by the verdict journal."""
-        if not isinstance(event, QueryEvent):
-            raise QueryLogStorageError("Invalid event")
-        with self.database.transaction(QueryLogStorageError) as connection:
-            insert_consulta(
-                connection, username=None, url_hash=None, domain=event.domain,
-                verdict=event.verdict, policy=event.policy, score=None, source=event.source,
-                latency_ms=event.latencyMs, at=event.at)
 
     def list(self):
         with self.database.transaction(QueryLogStorageError) as connection:

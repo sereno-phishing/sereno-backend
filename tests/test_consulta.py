@@ -1,18 +1,19 @@
-"""The history and query-log ports, and the
-`consulta` model where one row per served verdict backs both."""
+"""The `consulta` model: one row per served verdict, written by the verdict
+journal, backs both the per-user history and the query log of the metrics."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
-from app.history.domain import CAPACITY, HistoryRecord, HistoryStorageError
+from app.history.domain import CAPACITY, HistoryStorageError
 from app.history.postgres_repository import PostgresHistoryRepository
 from app.history.service import HistoryService
-from app.metrics.domain import QueryEvent, QueryLogStorageError
+from app.metrics.domain import QueryEvent
 from app.metrics.postgres_repository import PostgresQueryLogRepository
 from app.metrics.service import MetricsService
 from app.verdict.classifier import Classification
+from app.verdict.journal import ServedVerdict
 from app.verdict.postgres_journal import PostgresVerdictJournal
 from app.verdict.service import VerdictService
 from app.verdict.url import cache_key, normalize
@@ -44,164 +45,145 @@ class SpyClassifier:
         return Classification("phishing", 0.81)
 
 
-class SpySideEffect:
-    def __init__(self):
-        self.records = []
-
-    def record(self, *arguments):
-        self.records.append(arguments)
-
-
-def add_accounts(database, *names):
-    with database.transaction(RuntimeError) as connection:
-        for name in names:
-            connection.execute(
-                "INSERT INTO usuario (nombre, hash_contrasena, rol, fecha_registro) "
-                "VALUES (%s, 'hash', 'user', now())", (name,))
-
-
 def count(database, query):
     with database.transaction(RuntimeError) as connection:
         return connection.execute(query).fetchone()[0]
 
 
 @pytest.fixture
-def histories(database):
-    add_accounts(database, "alice", "bob")
-    return PostgresHistoryRepository(database, zone=lambda: LIMA)
+def clock():
+    return Clock()
 
 
 @pytest.fixture
-def query_logs(database):
-    """-> factory(capacity) of QueryLogRepository adapters over one store."""
-    return lambda capacity: PostgresQueryLogRepository(database, capacity)
+def journal(database, clock):
+    """The journal over a database that has the accounts alice and bob."""
+    with database.transaction(RuntimeError) as connection:
+        for name in ("alice", "bob"):
+            connection.execute(
+                "INSERT INTO usuario (nombre, hash_contrasena, rol, fecha_registro) "
+                "VALUES (%s, 'hash', 'user', now())", (name,))
+    return PostgresVerdictJournal(database, clock)
 
 
-def record(domain="shop.pe", verdict="legitima", ts="2026-10-31T09:30", id="h-1",
-           source="modelo", score=0.1, latency=40):
-    return HistoryRecord(id, domain, verdict, "advertencia", score, source, ts, latency)
+@pytest.fixture
+def histories(database):
+    return PostgresHistoryRepository(database, zone=lambda: LIMA)
 
 
-def shown(records):
-    """Everything but the id, which each adapter is free to assign."""
-    return [{name: value for name, value in item.public().items() if name != "id"}
-            for item in records]
+def serve(journal, username, domain="shop.pe", verdict="legitima", source="modelo", score=0.1,
+          latency=40, policy="advertencia"):
+    """Records one served verdict of a URL of the domain, as the verdict service does."""
+    journal.record(username, ServedVerdict(
+        urlHash=cache_key(f"https://{domain}/"), domain=domain, verdict=verdict, policy=policy,
+        score=score, source=source, latencyMs=latency,
+        modelVersion="9.9" if source == "modelo" else None))
 
 
 # History port
 
-def test_history_is_per_user_newest_first(histories):
+def test_history_is_per_user_newest_first(journal, histories, clock):
     assert histories.list("alice") == ()
-    first = record(source="cache", score=0.97, latency=3)
-    second = record(domain="other.pe", verdict="phishing", ts="2026-10-31T09:45", id="h-2")
-    histories.append("alice", first)
-    histories.append("alice", second)
-    histories.append("bob", record(domain="bob.pe"))
-    listed = histories.list("alice")
-    assert shown(listed) == shown([second, first])
-    assert all(isinstance(item.id, str) and item.id for item in listed)
-    assert len({item.id for item in listed}) == 2
-    assert shown(histories.list("bob")) == shown([record(domain="bob.pe")])
-    assert {name: shown(items) for name, items in histories.all().items()} == {
-        "alice": shown([second, first]), "bob": shown([record(domain="bob.pe")])}
+    serve(journal, "alice", source="cache", score=0.97, latency=3)
+    clock.advance(minutes=15)
+    serve(journal, "alice", domain="other.pe", verdict="phishing")
+    serve(journal, "bob", domain="bob.pe")
+    serve(journal, None, domain="anonymous.pe")
+    assert [item.public() for item in histories.list("alice")] == [
+        {"id": "h-2", "domain": "other.pe", "verdict": "phishing", "policy": "advertencia",
+         "score": 0.1, "source": "modelo", "ts": "2026-10-31T09:45", "latencyMs": 40},
+        {"id": "h-1", "domain": "shop.pe", "verdict": "legitima", "policy": "advertencia",
+         "score": 0.97, "source": "cache", "ts": "2026-10-31T09:30", "latencyMs": 3}]
+    assert [item.domain for item in histories.list("bob")] == ["bob.pe"]
 
 
-def test_history_shows_the_same_visit_within_a_minute_once(histories):
-    histories.append("alice", record())
-    histories.append("alice", record(domain="other.pe"))
-    histories.append("alice", record(ts="2026-10-31T09:31", source="cache"))
+def test_history_shows_the_same_visit_within_a_minute_once(journal, histories, clock):
+    serve(journal, "alice")
+    serve(journal, "alice", domain="other.pe")
+    clock.advance(minutes=1)
+    serve(journal, "alice", source="cache")
     assert [(item.domain, item.ts, item.source) for item in histories.list("alice")] == [
         ("shop.pe", "2026-10-31T09:31", "cache"), ("other.pe", "2026-10-31T09:30", "modelo")]
-    histories.append("alice", record(ts="2026-10-31T09:33"))
-    histories.append("alice", record(verdict="phishing", ts="2026-10-31T09:33"))
+    clock.advance(minutes=2)
+    serve(journal, "alice")
+    serve(journal, "alice", verdict="phishing")
     assert [(item.verdict, item.ts) for item in histories.list("alice")] == [
         ("phishing", "2026-10-31T09:33"), ("legitima", "2026-10-31T09:33"),
         ("legitima", "2026-10-31T09:31"), ("legitima", "2026-10-31T09:30")]
 
 
-def test_history_shows_the_newest_capacity_records(histories):
+def test_history_shows_the_newest_capacity_records(journal, histories):
     for index in range(CAPACITY + 5):
-        histories.append("alice", record(domain=f"d{index}.pe"))
+        serve(journal, "alice", domain=f"d{index}.pe")
     listed = histories.list("alice")
     assert len(listed) == CAPACITY
     assert listed[0].domain == f"d{CAPACITY + 4}.pe" and listed[-1].domain == "d5.pe"
 
 
-def test_clearing_a_history_empties_it_for_that_user_only(histories):
-    histories.append("alice", record())
-    histories.append("bob", record(domain="bob.pe"))
+def test_clearing_a_history_empties_it_for_that_user_only(journal, histories):
+    serve(journal, "alice")
+    serve(journal, "bob", domain="bob.pe")
     histories.clear("alice")
     histories.clear("alice")
     assert histories.list("alice") == ()
     assert len(histories.list("bob")) == 1
-    histories.append("alice", record(domain="again.pe"))
+    serve(journal, "alice", domain="again.pe")
     assert [item.domain for item in histories.list("alice")] == ["again.pe"]
 
 
-def test_invalid_history_input_is_a_storage_error(histories):
-    for username in ("", None):
-        with pytest.raises(HistoryStorageError):
-            histories.list(username)
-        with pytest.raises(HistoryStorageError):
-            histories.clear(username)
-        with pytest.raises(HistoryStorageError):
-            histories.append(username, record())
+@pytest.mark.parametrize("username", ["", None])
+def test_invalid_history_input_is_a_storage_error(histories, username):
     with pytest.raises(HistoryStorageError):
-        histories.append("alice", {"domain": "shop.pe"})
-    assert histories.list("alice") == ()
+        histories.list(username)
+    with pytest.raises(HistoryStorageError):
+        histories.clear(username)
+
+
+def test_a_verdict_of_an_unknown_account_is_kept_without_a_user(database, journal, histories):
+    serve(journal, "ghost")
+    assert histories.list("ghost") == ()
+    assert count(database, "SELECT count(*) FROM consulta WHERE id_usuario IS NULL") == 1
 
 
 # Query-log port
 
-def event(minutes, domain="shop.pe", verdict="legitima", policy="advertencia", source="modelo",
-          latency=40):
-    return QueryEvent(domain, verdict, policy, source, latency,
-                      START + timedelta(minutes=minutes))
-
-
-def test_query_log_lists_events_oldest_first(query_logs):
-    log = query_logs(100)
+def test_query_log_lists_events_oldest_first(database, journal, clock):
+    log = PostgresQueryLogRepository(database)
     assert log.list() == ()
-    events = [event(0), event(1, "bad.net", "phishing", "bloqueo", "cache", 3), event(1)]
-    for item in events:
-        log.append(item)
-    assert list(log.list()) == events
+    serve(journal, "alice")
+    clock.advance(minutes=1)
+    serve(journal, None, domain="bad.net", verdict="phishing", source="cache", latency=3,
+          policy="bloqueo")
+    serve(journal, "bob")
+    assert list(log.list()) == [
+        QueryEvent("shop.pe", "legitima", "advertencia", "modelo", 40, START),
+        QueryEvent("bad.net", "phishing", "bloqueo", "cache", 3, START + timedelta(minutes=1)),
+        QueryEvent("shop.pe", "legitima", "advertencia", "modelo", 40,
+                   START + timedelta(minutes=1))]
     assert all(item.at.tzinfo is not None for item in log.list())
 
 
-def test_query_log_keeps_the_newest_capacity_events(query_logs):
-    log = query_logs(3)
-    for minute in range(5):
-        log.append(event(minute, f"d{minute}.pe"))
-    assert [item.domain for item in log.list()] == ["d2.pe", "d3.pe", "d4.pe"]
+def test_query_log_is_the_newest_capacity_events(database, journal):
+    for index in range(5):
+        serve(journal, None, domain=f"d{index}.pe")
+    assert [item.domain for item in PostgresQueryLogRepository(database, 3).list()] == [
+        "d2.pe", "d3.pe", "d4.pe"]
+    assert count(database, "SELECT count(*) FROM consulta") == 5
 
 
-def test_invalid_query_event_is_a_storage_error(query_logs):
-    log = query_logs(100)
-    with pytest.raises(QueryLogStorageError):
-        log.append({"domain": "shop.pe"})
-    assert log.list() == ()
-
-
-# PostgreSQL: one consulta row per served verdict
+# The verdict service on the journal
 
 @pytest.fixture
-def served(database, redis_client):
-    """-> (verdict service journaling into PostgreSQL, history, metrics, clock, spies)."""
-    add_accounts(database, "alice", "bob")
-    clock = Clock()
-    history = HistoryService(PostgresHistoryRepository(database, zone=lambda: clock().tzinfo),
-                             clock)
+def served(database, redis_client, journal, clock):
+    """-> (verdict service journaling into PostgreSQL, history, metrics)."""
+    history = HistoryService(PostgresHistoryRepository(database, zone=lambda: clock().tzinfo))
     metrics = MetricsService(PostgresQueryLogRepository(database), clock)
-    spies = SpySideEffect(), SpySideEffect()
-    service = VerdictService(CacheService(RedisCacheRepository(redis_client, database), clock), SpyClassifier(),
-                             spies[0], query_log=spies[1],
-                             journal=PostgresVerdictJournal(database, clock))
-    return service, history, metrics, clock, spies
+    cache = CacheService(RedisCacheRepository(redis_client, database), clock)
+    return VerdictService(cache, SpyClassifier(), journal), history, metrics
 
 
-def test_one_row_per_verdict_backs_history_and_metrics(database, served):
-    service, history, metrics, clock, spies = served
+def test_one_row_per_verdict_backs_history_and_metrics(database, served, clock):
+    service, history, metrics = served
     url = "https://www.Shop.pe/secret-path?token=abc"
     service.evaluate(url, None)
     clock.advance(minutes=5)
@@ -210,7 +192,6 @@ def test_one_row_per_verdict_backs_history_and_metrics(database, served):
     miss = service.evaluate("https://shop.pe/other", "alice")
 
     assert count(database, "SELECT count(*) FROM consulta") == 3
-    assert spies[0].records == [] and spies[1].records == []
     entries = history.list("alice")
     assert [(entry["domain"], entry["source"], entry["ts"]) for entry in entries] == [
         ("shop.pe", "modelo", "2026-10-31T09:40"), ("shop.pe", "cache", "2026-10-31T09:35")]
@@ -226,7 +207,7 @@ def test_one_row_per_verdict_backs_history_and_metrics(database, served):
 
 
 def test_a_miss_records_the_prediction_and_registers_the_model_version(database, served):
-    service, _, _, clock, _ = served
+    service, _, _ = served
     url = "https://www.Shop.pe/secret-path?token=abc"
     service.evaluate(url, None)
     service.evaluate(url, "alice")
@@ -248,8 +229,8 @@ def test_a_miss_records_the_prediction_and_registers_the_model_version(database,
     assert "secret-path" not in stored and "token=abc" not in stored
 
 
-def test_history_shows_a_repeated_visit_once_while_metrics_count_both(database, served):
-    service, history, metrics, clock, _ = served
+def test_history_shows_a_repeated_visit_once_while_metrics_count_both(served, clock):
+    service, history, metrics = served
     service.evaluate("https://shop.pe/a", "alice")
     clock.advance(seconds=30)
     service.evaluate("https://shop.pe/a", "alice")
@@ -263,7 +244,7 @@ def test_history_shows_a_repeated_visit_once_while_metrics_count_both(database, 
 
 
 def test_clearing_a_history_unlinks_the_user_and_keeps_the_metrics(database, served):
-    service, history, metrics, _, _ = served
+    service, history, metrics = served
     service.evaluate("https://shop.pe/a", "alice")
     service.evaluate("https://shop.pe/b", "bob")
     history.clear("alice")
@@ -279,28 +260,6 @@ def test_a_journal_failure_never_fails_the_verdict(database, redis_client):
         def transaction(self, error):
             raise error("Storage unavailable")
 
-    service = VerdictService(CacheService(RedisCacheRepository(redis_client, database), Clock()), SpyClassifier(),
-                             SpySideEffect(), journal=PostgresVerdictJournal(Down(), Clock()))
+    cache = CacheService(RedisCacheRepository(redis_client, database), Clock())
+    service = VerdictService(cache, SpyClassifier(), PostgresVerdictJournal(Down(), Clock()))
     assert service.evaluate("https://shop.pe/a", "alice")["verdict"] == "phishing"
-
-
-def test_postgres_history_requires_an_existing_account(database):
-    histories = PostgresHistoryRepository(database, zone=lambda: LIMA)
-    with pytest.raises(HistoryStorageError):
-        histories.append("ghost", record())
-    assert histories.list("ghost") == ()
-    assert count(database, "SELECT count(*) FROM consulta") == 0
-
-
-def test_records_appended_through_the_ports_have_no_url_hash_or_prediction(database):
-    """The ports carry a domain only: such rows hang from a hashless url_evaluada row."""
-    add_accounts(database, "alice")
-    PostgresHistoryRepository(database, zone=lambda: LIMA).append("alice", record())
-    PostgresQueryLogRepository(database).append(event(0))
-    PostgresQueryLogRepository(database).append(event(1, "other.pe"))
-    with database.transaction(RuntimeError) as connection:
-        assert connection.execute(
-            "SELECT hash_url, dominio FROM url_evaluada ORDER BY dominio").fetchall() == [
-                (None, "other.pe"), (None, "shop.pe")]
-    assert count(database, "SELECT count(*) FROM consulta") == 3
-    assert count(database, "SELECT count(*) FROM prediccion") == 0

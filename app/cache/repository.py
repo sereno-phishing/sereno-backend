@@ -11,8 +11,7 @@ class CacheRepository(Protocol):
     failures raise CacheStorageError."""
 
     def settings(self) -> CacheState:
-        """The TTL settings and the invalidations, newest first. The entries
-        are not part of this view and may be left out."""
+        """The TTL settings and the invalidations, newest first."""
         ...
 
     def set_ttl(self, phishing_days: int, legit_hours: int) -> CacheState:

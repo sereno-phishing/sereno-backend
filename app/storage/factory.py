@@ -25,9 +25,9 @@ class Repositories:
     cache: Any
     history: Any
     query_log: Any
-    # VerdictJournal: one record per served verdict instead of the separate
-    # history and query-log writes.
-    journal: Any = None
+    # VerdictJournal: one record per served verdict; the history and the
+    # query log are read from those records.
+    journal: Any
 
 
 def build_repositories(config, clock=None):

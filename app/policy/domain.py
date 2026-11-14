@@ -23,15 +23,14 @@ class PolicyRow:
     updatedAt: str
 
     @classmethod
-    def create(cls, domain, policy, updated_at, default_policy=False):
+    def create(cls, domain, policy, updated_at):
         if not isinstance(domain, str) or not isinstance(updated_at, str):
             raise InvalidPolicy
         normalized = domain.strip().lower()
         if (not normalized or len(normalized) > 253
                 or any(not _DOMAIN_LABEL.fullmatch(label) for label in normalized.split("."))):
             raise InvalidPolicy
-        selected = DEFAULT_POLICY if default_policy and policy is None else policy
-        if not isinstance(selected, str) or selected not in POLICIES:
+        if not isinstance(policy, str) or policy not in POLICIES:
             raise InvalidPolicy
         try:
             parsed = datetime.strptime(updated_at, "%Y-%m-%d")
@@ -39,7 +38,7 @@ class PolicyRow:
             raise InvalidPolicy from error
         if parsed.strftime("%Y-%m-%d") != updated_at:
             raise InvalidPolicy
-        return cls(normalized, selected, updated_at)
+        return cls(normalized, policy, updated_at)
 
     def public(self):
         return {"domain": self.domain, "policy": self.policy, "updatedAt": self.updatedAt}

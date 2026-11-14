@@ -15,16 +15,12 @@ CREATE TABLE IF NOT EXISTS usuario (
     fecha_registro  TIMESTAMPTZ NOT NULL
 );
 
--- hash_url is NULL only for records written through the history and query-log
--- ports, which carry the domain but no hash; such a row stands for "some URL of the domain".
 CREATE TABLE IF NOT EXISTS url_evaluada (
     id_url   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    hash_url CHAR(64) UNIQUE CHECK (hash_url ~ '^[0-9a-f]{64}$'),
+    hash_url CHAR(64) NOT NULL UNIQUE CHECK (hash_url ~ '^[0-9a-f]{64}$'),
     dominio  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS url_evaluada_dominio ON url_evaluada (dominio);
-CREATE UNIQUE INDEX IF NOT EXISTS url_evaluada_dominio_sin_hash
-    ON url_evaluada (dominio) WHERE hash_url IS NULL;
 
 CREATE TABLE IF NOT EXISTS version_modelo (
     codigo           VARCHAR(20) PRIMARY KEY,
@@ -34,15 +30,14 @@ CREATE TABLE IF NOT EXISTS version_modelo (
 
 -- One row per served verdict: it backs both the per-user history and the
 -- dashboard metrics. veredicto, politica and puntaje are the values that were
--- answered; puntaje is NULL only for records written through the query-log port, which never
--- kept it. Clearing a history sets id_usuario to NULL.
+-- answered. Clearing a history sets id_usuario to NULL.
 CREATE TABLE IF NOT EXISTS consulta (
     id_consulta BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id_usuario  INTEGER REFERENCES usuario (id_usuario) ON DELETE SET NULL,
     id_url      INTEGER NOT NULL REFERENCES url_evaluada (id_url),
     veredicto   TEXT NOT NULL CHECK (veredicto IN ('phishing', 'legitima')),
     politica    TEXT NOT NULL CHECK (politica IN ('advertencia', 'bloqueo')),
-    puntaje     DOUBLE PRECISION CHECK (puntaje BETWEEN 0 AND 1),
+    puntaje     DOUBLE PRECISION NOT NULL CHECK (puntaje BETWEEN 0 AND 1),
     origen      TEXT NOT NULL CHECK (origen IN ('HIT', 'MISS')),
     latencia_ms INTEGER NOT NULL CHECK (latencia_ms >= 0),
     fecha       TIMESTAMPTZ NOT NULL

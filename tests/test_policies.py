@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app import create_app
-from app.policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
+from app.policy.domain import PolicyRow, PolicyStorageError
 from app.policy.postgres_repository import PostgresPolicyRepository
 from app.policy.service import PolicyService
 from conftest import rows, set_role
@@ -136,15 +136,6 @@ def test_invalid_policy_payload_leaves_the_stored_list_unchanged(config, payload
     assert response.status_code == 400
     assert response.get_json() == {"error": "invalid"}
     assert rows(config, "politica_dominio") == before
-
-
-def test_policy_domain_defaults_only_when_explicitly_requested():
-    assert PolicyRow.create(" Example.com ", None, "2026-10-27", default_policy=True) == PolicyRow(
-        "example.com", "advertencia", "2026-10-27")
-    with pytest.raises(InvalidPolicy):
-        PolicyRow.create("example.com", None, "2026-10-27")
-
-
 
 
 @pytest.mark.parametrize("operation", ["list", "replace"])

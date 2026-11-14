@@ -1,7 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
-
 from app import create_app
 from app.survey.domain import SurveyStorageError
 from app.survey.postgres_repository import PostgresSurveyRepository

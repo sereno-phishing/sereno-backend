@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from .domain import AlreadySubmitted, InvalidSurvey, SurveyStorageError, SurveySubmission
+from .domain import AlreadySubmitted, SurveyStorageError, SurveySubmission
 
 
 STAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # UTC, as the survey service writes it
@@ -47,15 +47,3 @@ class PostgresSurveyRepository:
                 "SELECT 1 FROM encuesta_participante p "
                 "JOIN usuario u ON u.id_usuario = p.id_usuario WHERE u.nombre = %s",
                 (username,)).fetchone() is not None
-
-    def list_submissions(self):
-        with self.database.transaction(SurveyStorageError) as connection:
-            rows = connection.execute(
-                "SELECT respuestas, fecha_envio FROM encuesta_respuesta "
-                "ORDER BY id_respuesta").fetchall()
-        try:
-            return tuple(SurveySubmission(
-                tuple(answers), sent.astimezone(timezone.utc).strftime(STAMP_FORMAT))
-                for answers, sent in rows)
-        except InvalidSurvey as error:
-            raise SurveyStorageError("Storage unavailable") from error

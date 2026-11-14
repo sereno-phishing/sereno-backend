@@ -1,5 +1,6 @@
 """Per-user history of evaluated sites. Mirrors the extension's
-history/domain/history.js (record shape, 60 s dedupe, 200 newest)."""
+history/domain/history.js: the record shape, and the listing rules the
+repository applies (the same visit within 60 s once, the 200 newest)."""
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -47,30 +48,5 @@ class HistoryRecord:
                 or not (self.latencyMs is None or type(self.latencyMs) is int)):
             raise InvalidHistory
 
-    @classmethod
-    def from_public(cls, record):
-        if not isinstance(record, dict) or set(record) != set(FIELDS):
-            raise InvalidHistory
-        return cls(*(record[name] for name in FIELDS))
-
     def public(self):
         return {name: getattr(self, name) for name in FIELDS}
-
-
-def _duplicate(candidate, record):
-    if (candidate.domain, candidate.verdict, candidate.policy) != (
-            record.domain, record.verdict, record.policy):
-        return False
-    delta = parse_stamp(candidate.ts) - parse_stamp(record.ts)
-    return abs(delta.total_seconds()) <= DEDUPE_WINDOW_SECONDS
-
-
-def append(entries, record):
-    """Puts the record first, replacing the first duplicate visit, and keeps the
-    newest CAPACITY entries. Returns a new tuple."""
-    entries = list(entries)
-    for index, candidate in enumerate(entries):
-        if _duplicate(candidate, record):
-            del entries[index]
-            break
-    return tuple([record, *entries][:CAPACITY])

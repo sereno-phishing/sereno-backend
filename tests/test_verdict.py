@@ -8,12 +8,11 @@ from app.auth.domain import StorageError
 from app.auth.postgres_repository import PostgresAuthRepository
 from app.cache.redis_repository import RedisCacheRepository
 from app.cache.service import CacheService
-from app.history.domain import CAPACITY, HistoryRecord, HistoryStorageError, append
-from app.history.service import HistoryService
 from app.metrics.domain import QueryLogStorageError
 from app.policy.domain import PolicyStorageError
 from app.verdict.classifier import Classification
 from app.verdict.fake_classifier import FakeClassifier
+from app.verdict.journal import ServedVerdict
 from app.verdict.postgres_journal import PostgresVerdictJournal
 from app.verdict.service import ClassifierError, InvalidUrl, VerdictService
 from app.verdict.url import cache_key, normalize
@@ -59,17 +58,6 @@ class SpyClassifier:
         return self.result
 
 
-class SpyHistory:
-    def __init__(self, fail=False):
-        self.fail = fail
-        self.records = []
-
-    def record(self, username, verdict):
-        if self.fail:
-            raise HistoryStorageError("down")
-        self.records.append((username, verdict))
-
-
 class StubPolicies:
     def __init__(self, policies=None, fail=False):
         self.policies = policies or {}
@@ -81,13 +69,24 @@ class StubPolicies:
         return self.policies.get(domain, "advertencia")
 
 
+class SpyJournal:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.records = []
+
+    def record(self, username, served):
+        if self.fail:
+            raise QueryLogStorageError("down")
+        self.records.append((username, served))
+
+
 @pytest.fixture
 def make_service(database, redis_client):
     """-> make(...) -> (verdict service, its cache service) on the test stores."""
-    def make(classifier=None, history=None, clock=None, policies=None):
+    def make(classifier=None, journal=None, clock=None, policies=None):
         clock = clock or Clock()
         cache = CacheService(RedisCacheRepository(redis_client, database), clock)
-        return VerdictService(cache, classifier or FakeClassifier(), history or SpyHistory(),
+        return VerdictService(cache, classifier or FakeClassifier(), journal or SpyJournal(),
                               timer=Timer(), policies=policies), cache
     return make
 
@@ -175,14 +174,17 @@ def test_policy_storage_failure_falls_back_to_the_default_policy(make_service):
     assert (verdict["verdict"], verdict["policy"]) == ("phishing", "advertencia")
 
 
-def test_history_records_signed_in_users_only_and_never_fails_the_verdict(make_service):
-    history = SpyHistory()
-    service, _ = make_service(history=history)
-    service.evaluate("https://shop.pe", None)
-    verdict = service.evaluate("https://shop.pe", "alice")
-    assert history.records == [("alice", verdict)]
-    failing, _ = make_service(history=SpyHistory(fail=True))
-    assert failing.evaluate("https://shop.pe", "alice")["verdict"] == "legitima"
+def test_every_verdict_is_journaled_with_its_user_url_hash_and_model_version(make_service):
+    journal = SpyJournal()
+    service, _ = make_service(SpyClassifier(), journal=journal)
+    miss = service.evaluate("https://shop.pe", None)
+    hit = service.evaluate("https://shop.pe", "alice")
+    key = cache_key(normalize("https://shop.pe"))
+    assert journal.records == [
+        (None, ServedVerdict(urlHash=key, modelVersion="9.9", **miss)),
+        ("alice", ServedVerdict(urlHash=key, modelVersion=None, **hit))]
+    failing, _ = make_service(journal=SpyJournal(fail=True))
+    assert failing.evaluate("https://shop.pe/other", "alice")["verdict"] == "legitima"
 
 
 @pytest.mark.parametrize("url", ["", "   ", "about:blank", "shop.pe", "ftp://shop.pe/x",
@@ -202,36 +204,6 @@ def test_classifier_failure_or_bad_output_is_a_classifier_error(make_service, re
     with pytest.raises(ClassifierError):
         service.evaluate("https://shop.pe", None)
     assert cache.lookup(cache_key(normalize("https://shop.pe"))) is None
-
-
-# History domain (mirrors Sereno.history.append)
-
-def record(domain="shop.pe", verdict="legitima", ts="2026-10-31T09:30", id="h-1"):
-    return HistoryRecord(id, domain, verdict, "advertencia", 0.1, "modelo", ts, 40)
-
-
-def test_append_puts_newest_first_and_dedupes_same_visit_within_a_minute():
-    entries = append((), record(id="h-1"))
-    entries = append(entries, record(domain="other.pe", id="h-2"))
-    entries = append(entries, record(ts="2026-10-31T09:31", id="h-3"))
-    assert [entry.id for entry in entries] == ["h-3", "h-2"]
-    entries = append(entries, record(ts="2026-10-31T09:33", id="h-4"))
-    entries = append(entries, record(verdict="phishing", ts="2026-10-31T09:33", id="h-5"))
-    assert [entry.id for entry in entries] == ["h-5", "h-4", "h-3", "h-2"]
-
-
-def test_append_keeps_capacity_newest():
-    entries = ()
-    for index in range(CAPACITY + 5):
-        entries = append(entries, record(domain=f"d{index}.pe", id=f"h-{index}"))
-    assert len(entries) == CAPACITY
-    assert entries[0].id == f"h-{CAPACITY + 4}"
-
-
-def test_default_history_ids_follow_extension_format():
-    ids = {HistoryService(None, Clock()).new_id() for _ in range(20)}
-    assert len(ids) == 20
-    assert all(value.startswith("h-") for value in ids)
 
 
 # HTTP

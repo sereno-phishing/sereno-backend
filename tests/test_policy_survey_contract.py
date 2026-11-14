@@ -1,5 +1,6 @@
 """The policy and survey repository ports, exercised against the PostgreSQL adapters."""
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timezone
 
 import pytest
 
@@ -7,7 +8,7 @@ from app.policy.domain import PolicyRow, PolicyStorageError
 from app.policy.postgres_repository import PostgresPolicyRepository
 from app.policy.service import PolicyService
 from app.survey.domain import AlreadySubmitted, SurveyStorageError, SurveySubmission
-from app.survey.postgres_repository import PostgresSurveyRepository
+from app.survey.postgres_repository import STAMP_FORMAT, PostgresSurveyRepository
 
 
 ACCOUNTS = ("alice", "bob", "carol")
@@ -36,23 +37,32 @@ def policies(database):
     return PostgresPolicyRepository(database)
 
 
+def submissions(surveys):
+    """Every stored response, oldest first, as the domain record it was sent as."""
+    with surveys.database.transaction(RuntimeError) as connection:
+        return tuple(
+            SurveySubmission(tuple(answers), sent.astimezone(timezone.utc).strftime(STAMP_FORMAT))
+            for answers, sent in connection.execute(
+                "SELECT respuestas, fecha_envio FROM encuesta_respuesta ORDER BY id_respuesta"))
+
+
 # Survey
 
 def test_one_submission_per_account_and_separate_participation(surveys):
     assert surveys.has_submitted("alice") is False
-    assert surveys.list_submissions() == ()
+    assert submissions(surveys) == ()
     surveys.submit("alice", FIRST)
     assert surveys.has_submitted("alice") is True
     assert surveys.has_submitted("bob") is False
     surveys.submit("bob", SECOND)
-    assert surveys.list_submissions() == (FIRST, SECOND)
+    assert submissions(surveys) == (FIRST, SECOND)
 
 
 def test_a_second_submission_is_rejected_without_adding_a_response(surveys):
     surveys.submit("alice", FIRST)
     with pytest.raises(AlreadySubmitted):
         surveys.submit("alice", SECOND)
-    assert surveys.list_submissions() == (FIRST,)
+    assert submissions(surveys) == (FIRST,)
     assert surveys.has_submitted("alice") is True
 
 
@@ -61,7 +71,7 @@ def test_a_second_submission_is_rejected_without_adding_a_response(surveys):
 def test_invalid_survey_input_is_a_storage_error_without_changes(surveys, username, submission):
     with pytest.raises(SurveyStorageError):
         surveys.submit(username, submission)
-    assert surveys.list_submissions() == ()
+    assert submissions(surveys) == ()
     assert surveys.has_submitted("alice") is False
 
 
@@ -81,7 +91,7 @@ def test_concurrent_submissions_of_one_account_keep_a_single_response(surveys):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(attempt, range(4)))
     assert sum(results) == 1
-    assert surveys.list_submissions() == (FIRST,)
+    assert submissions(surveys) == (FIRST,)
 
 
 def test_responses_cannot_be_linked_to_participants(database):
@@ -102,7 +112,7 @@ def test_survey_rejects_a_participant_without_an_account(database):
     surveys = PostgresSurveyRepository(database)
     with pytest.raises(SurveyStorageError):
         surveys.submit("ghost", FIRST)
-    assert surveys.list_submissions() == ()
+    assert submissions(surveys) == ()
     assert surveys.has_submitted("ghost") is False
 
 

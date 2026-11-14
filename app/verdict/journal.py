@@ -1,5 +1,5 @@
-"""Verdict journal port: one write per served verdict, for stores where the
-history and the metrics are two readings of the same record."""
+"""Verdict journal port: one write per served verdict; the per-user
+history and the metrics are two readings of those records."""
 from dataclasses import dataclass
 from typing import Protocol
 
