@@ -1,4 +1,4 @@
-# Local development services for STORAGE_DRIVER=postgres: PostgreSQL holds the
+# Local development services of the backend: PostgreSQL holds the
 # relational data and Redis the verdict cache. Both listen on the loopback
 # interface only. Credentials are development-only; override them in a
 # Git-ignored .env file (variables and defaults in the README), never reuse them
