@@ -8,9 +8,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from .auth.service import AuthService
 from .cache.service import CacheService
 from .config import CLASSIFIERS, model_path, settings
+from .dev.service import DevUserService
 from .history.service import HistoryService
-from .http import (auth_routes, cache_routes, history_routes, metrics_routes, policy_routes,
-                   survey_routes, verdict_routes)
+from .http import (auth_routes, cache_routes, dev_routes, history_routes, metrics_routes,
+                   policy_routes, survey_routes, verdict_routes)
 from .metrics.service import MetricsService
 from .policy.service import PolicyService
 from .storage.factory import build_repositories
@@ -65,6 +66,11 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
         app.config.update(config)
     if not isinstance(app.config["AUTH_LOCAL_HTTP"], bool):
         raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
+    if not isinstance(app.config["DEV_TOOLS"], bool):
+        raise ValueError("DEV_TOOLS must be a boolean")
+    if app.config["DEV_TOOLS"] and app.config["STORAGE_DRIVER"] != "postgres":
+        # Only the PostgreSQL adapter implements account administration.
+        raise ValueError("DEV_TOOLS requires STORAGE_DRIVER=postgres")
     repositories = build_repositories(app.config, clock)
     auth_service = AuthService(repositories.auth, generate_password_hash, check_password_hash)
     survey_service = SurveyService(repositories.survey)
@@ -93,4 +99,11 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
     app.register_blueprint(verdict_routes(auth_service, verdict_service))
     app.register_blueprint(history_routes(auth_service, history_service))
     app.register_blueprint(metrics_routes(auth_service, metrics_service))
+    if app.config["DEV_TOOLS"]:
+        # Nothing of the tool exists otherwise: no service, no route.
+        if not app.config.get("TESTING"):
+            app.logger.warning("DEV_TOOLS=1: user administration without a session at "
+                               "/dev/users (loopback only); never enable it outside a "
+                               "developer machine")
+        app.register_blueprint(dev_routes(DevUserService(repositories.auth)))
     return app

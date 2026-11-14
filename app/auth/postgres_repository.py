@@ -72,3 +72,25 @@ class PostgresAuthRepository:
     def delete_session(self, token):
         with self.database.transaction(StorageError) as connection:
             connection.execute("DELETE FROM sesion WHERE token = %s", (token,))
+
+    def list_users(self):
+        with self.database.transaction(StorageError) as connection:
+            rows = connection.execute(
+                "SELECT nombre, hash_contrasena, rol, fecha_registro FROM usuario "
+                'ORDER BY nombre COLLATE "C"').fetchall()
+        return tuple(User(row[0], row[1], row[2], _stamp(row[3])) for row in rows)
+
+    def set_role(self, username, role):
+        # The NOT NULL and CHECK constraints of the column reject any other role.
+        with self.database.transaction(StorageError) as connection:
+            return connection.execute(
+                "UPDATE usuario SET rol = %s WHERE nombre = %s", (role, username)).rowcount == 1
+
+    def delete_user(self, username):
+        """One statement, one transaction: the foreign keys remove the
+        sessions and the survey participation mark of the user and set the
+        user of its `consulta` rows to NULL (the rows stay, as when a history
+        is cleared). The anonymous survey responses reference nobody and stay."""
+        with self.database.transaction(StorageError) as connection:
+            return connection.execute(
+                "DELETE FROM usuario WHERE nombre = %s", (username,)).rowcount == 1

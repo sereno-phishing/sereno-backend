@@ -24,3 +24,22 @@ class AuthRepository(Protocol):
     def get_session(self, token: str) -> Session | None: ...
 
     def delete_session(self, token: str) -> None: ...
+
+    # Account administration, used only by the development tools. Implemented
+    # by the PostgreSQL adapter only: the JSON and memory adapters are being
+    # retired and were not extended.
+
+    def list_users(self) -> tuple[User, ...]:
+        """Every user, ordered by username (code point order)."""
+        ...
+
+    def set_role(self, username: str, role: str) -> bool:
+        """False for an unknown user; a role outside the domain raises
+        StorageError without changes. Sessions are untouched."""
+        ...
+
+    def delete_user(self, username: str) -> bool:
+        """Atomically removes the user and its sessions, unlinks its queries
+        (kept, without a user) and removes its survey participation mark
+        (the anonymous responses stay). False for an unknown user."""
+        ...

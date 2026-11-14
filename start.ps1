@@ -1,6 +1,6 @@
 $python = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
 # Settings this launcher may set; the caller's values are restored on exit.
-$managed = 'AUTH_LOCAL_HTTP', 'CLASSIFIER', 'STORAGE_DRIVER', 'DATABASE_URL', 'REDIS_URL'
+$managed = 'AUTH_LOCAL_HTTP', 'CLASSIFIER', 'STORAGE_DRIVER', 'DATABASE_URL', 'REDIS_URL', 'DEV_TOOLS'
 $previous = @{}
 foreach ($name in $managed) {
     $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -27,6 +27,12 @@ try {
         $env:STORAGE_DRIVER = 'postgres'
     }
     if ($env:STORAGE_DRIVER -eq 'postgres') {
+        # Development-only user administration at /dev/users (no session,
+        # loopback only) unless the caller already decided, e.g. DEV_TOOLS=0.
+        # It needs the postgres driver. Never enable it outside this machine.
+        if (-not $previous['DEV_TOOLS']) {
+            $env:DEV_TOOLS = '1'
+        }
         # docker compose reads .env by itself; the backend takes its two URLs
         # from the same file unless the caller already set them.
         $envFile = Join-Path $PSScriptRoot '.env'

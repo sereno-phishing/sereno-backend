@@ -27,7 +27,10 @@ def settings():
             "CACHE_DATA_FILE": os.environ.get("CACHE_DATA_FILE"),
             "HISTORY_DATA_FILE": os.environ.get("HISTORY_DATA_FILE"),
             "QUERY_LOG_DATA_FILE": os.environ.get("QUERY_LOG_DATA_FILE"),
-            "AUTH_LOCAL_HTTP": os.environ.get("AUTH_LOCAL_HTTP") == "1"}
+            "AUTH_LOCAL_HTTP": os.environ.get("AUTH_LOCAL_HTTP") == "1",
+            # Unauthenticated developer tools under /dev: off unless asked
+            # for, and never to be enabled outside a developer machine.
+            "DEV_TOOLS": os.environ.get("DEV_TOOLS") == "1"}
 
 
 def data_path(value):

@@ -5,6 +5,8 @@ from flask import Blueprint, current_app, jsonify, request
 
 from .auth.domain import Credentials, DuplicateUser, InvalidCredentials, PasswordVerificationError, StorageError
 from .cache.domain import CacheStorageError, InvalidCache
+from .dev.page import CONTENT_SECURITY_POLICY, PAGE
+from .dev.service import InvalidRole, UnknownUser
 from .history.domain import HistoryStorageError
 from .metrics.domain import QueryLogStorageError
 from .policy.domain import InvalidPolicy, PolicyRow, PolicyStorageError
@@ -15,10 +17,10 @@ from .verdict.service import ClassifierError, InvalidUrl
 COOKIE_NAME = "sereno_session"
 
 
-def guard_local_http():
-    if not current_app.config["AUTH_LOCAL_HTTP"]:
-        return None
-    # Direct loopback only: never trust a proxy's forwarded client or host.
+def direct_loopback():
+    """Whether the request comes straight from this machine to a loopback
+    address: a loopback peer, a literal loopback host (a name pointed at
+    127.0.0.1 by DNS does not count) and no forwarded headers of a proxy."""
     forwarded = any(name.lower() == "forwarded" or name.lower().startswith("x-forwarded-")
                     for name in request.headers.keys())
     try:
@@ -26,7 +28,14 @@ def guard_local_http():
                  and ip_address(urlsplit(request.host_url).hostname).is_loopback)
     except (ValueError, TypeError):
         local = False
-    if forwarded or not local:
+    return local and not forwarded
+
+
+def guard_local_http():
+    if not current_app.config["AUTH_LOCAL_HTTP"]:
+        return None
+    # Direct loopback only: never trust a proxy's forwarded client or host.
+    if not direct_loopback():
         return jsonify(error="server"), 403
     return None
 
@@ -311,6 +320,74 @@ def metrics_routes(auth_service, metrics_service):
 
     @routes.errorhandler(StorageError)
     @routes.errorhandler(QueryLogStorageError)
+    def unavailable(error):
+        return jsonify(error="server"), 500
+
+    return routes
+
+
+DEV_HEADER = "X-Sereno-Dev"
+
+
+def dev_routes(service):
+    """Development-only user administration; registered only with DEV_TOOLS.
+    It asks for no session, so it answers 404 to anything that is not a direct
+    loopback request, and its state-changing routes only accept what a page
+    on another origin cannot send without a CORS preflight, which is never
+    granted (no route here, or anywhere, sends a CORS header)."""
+    routes = Blueprint("dev", __name__, url_prefix="/dev")
+
+    @routes.before_request
+    def loopback_only():
+        if not direct_loopback():
+            return jsonify(error="not_found"), 404
+        return None
+
+    def same_origin_script(json_body):
+        """A custom header, and for a body the JSON content type: neither can
+        be set by an HTML form or a no-preflight cross-site fetch."""
+        if request.headers.get(DEV_HEADER) != "1":
+            return False
+        return not json_body or request.mimetype == "application/json"
+
+    @routes.get("/users")
+    def page():
+        response = current_app.response_class(PAGE, mimetype="text/html")
+        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @routes.get("/api/users")
+    def users():
+        return jsonify(users=service.list())
+
+    @routes.put("/api/users/<path:username>/role")
+    def set_role(username):
+        if not same_origin_script(json_body=True):
+            return jsonify(error="forbidden"), 403
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict) or set(payload) != {"role"}:
+            return jsonify(error="invalid"), 400
+        return jsonify(user=service.set_role(username, payload["role"]))
+
+    @routes.delete("/api/users/<path:username>")
+    def delete(username):
+        if not same_origin_script(json_body=False):
+            return jsonify(error="forbidden"), 403
+        service.delete(username)
+        return jsonify({})
+
+    @routes.errorhandler(UnknownUser)
+    def unknown(error):
+        return jsonify(error="not_found"), 404
+
+    @routes.errorhandler(InvalidRole)
+    def invalid(error):
+        return jsonify(error="invalid"), 400
+
+    @routes.errorhandler(StorageError)
     def unavailable(error):
         return jsonify(error="server"), 500
 
