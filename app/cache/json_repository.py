@@ -2,6 +2,7 @@ from datetime import datetime
 
 from ..json_file import JsonFile
 from .domain import CachedVerdict, CacheState, CacheStorageError, InvalidCache, Invalidation
+from .state_repository import StateCacheRepository
 
 
 KEYS = {"ttlPhishingDays", "ttlLegitHours", "invalidations", "entries"}
@@ -57,7 +58,7 @@ def _data(state):
         for key, entry in state.entries.items()}}
 
 
-class JsonCacheRepository:
+class JsonCacheRepository(StateCacheRepository):
     """JSON adapter of CacheRepository (single-process development storage)."""
 
     def __init__(self, path):

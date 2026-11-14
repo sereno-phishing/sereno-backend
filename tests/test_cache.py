@@ -50,10 +50,15 @@ def make_admin(client, config, username="alice"):
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-@pytest.fixture(params=["memory", "json"])
+@pytest.fixture(params=["memory", "json", "redis"])
 def repository(request, tmp_path):
     if request.param == "memory":
         return MemoryCacheRepository()
+    if request.param == "redis":
+        from app.cache.redis_repository import RedisCacheRepository
+
+        return RedisCacheRepository(request.getfixturevalue("redis_client"),
+                                    request.getfixturevalue("database"))
     return JsonCacheRepository(tmp_path / "cache.json")
 
 

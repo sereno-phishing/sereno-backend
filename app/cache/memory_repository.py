@@ -1,9 +1,10 @@
 from threading import RLock
 
 from .domain import CacheState, CacheStorageError
+from .state_repository import StateCacheRepository
 
 
-class MemoryCacheRepository:
+class MemoryCacheRepository(StateCacheRepository):
     """Process-local test implementation of CacheRepository."""
 
     def __init__(self, state=None):

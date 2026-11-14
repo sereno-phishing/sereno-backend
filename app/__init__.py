@@ -65,7 +65,7 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
         app.config.update(config)
     if not isinstance(app.config["AUTH_LOCAL_HTTP"], bool):
         raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
-    repositories = build_repositories(app.config)
+    repositories = build_repositories(app.config, clock)
     auth_service = AuthService(repositories.auth, generate_password_hash, check_password_hash)
     survey_service = SurveyService(repositories.survey)
     policy_service = PolicyService(repositories.policy)
@@ -84,7 +84,8 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
             app.logger.setLevel(logging.INFO)
         app.extensions["model_warm_up"] = background(warm_up_task(classifier, app.logger))
     verdict_service = VerdictService(cache_service, classifier, history_service,
-                                     query_log=metrics_service, policies=policy_service)
+                                     query_log=metrics_service, policies=policy_service,
+                                     journal=repositories.journal)
     app.register_blueprint(auth_routes(auth_service))
     app.register_blueprint(policy_routes(auth_service, policy_service))
     app.register_blueprint(survey_routes(auth_service, survey_service))
