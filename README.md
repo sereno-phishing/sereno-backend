@@ -69,6 +69,27 @@ Never add `-v` to `down` unless the development database is meant to be deleted.
 - **Health**: the container is healthy once `GET /v1/model` answers, that is, once the model is loaded; it starts only after PostgreSQL and Redis are healthy.
 - **Network**: port 5000 is published on `127.0.0.1` only. `AUTH_LOCAL_HTTP` is not set in the container: behind Docker's port publishing the peer address is the bridge gateway, not loopback, so that mode would answer 403 to every request. The container therefore uses the secure defaults (`Secure`, `SameSite=None` cookie, see "Cookie and browser boundary") and relies on the loopback-only port. `DEV_TOOLS` is not set either: `/dev/users` exists only in the host flow.
 
+## Response-time experiment
+
+`tools/response_time_experiment.py` runs experiment 2 of the paper against a running server: the end-to-end time of `POST /v1/verdict` measured at the client with `time.perf_counter`, from sending the request to having the parsed verdict, as the extension's HTTP call sees it. The URL file has one test-set URL per line (blank lines, `#` comments and repeated URLs are dropped). For each repetition level r (`--levels`, default `0,25,50,75` percent) the tool builds a sequence of `--requests` requests (default 1000) with `--seed` (default 20261111): `round(N*r)` requests (half up) repeat a URL already sent, the others are distinct URLs sampled without replacement; each repetition repeats one of them chosen at random and goes in a random slot after that URL's first occurrence. Each sequence runs in three modes:
+
+- `no-cache`: the server started with `CACHE_ENABLED=0` (below); every answer must say `source: "modelo"` and nothing may be left in the cache, otherwise the tool stops.
+- `empty`: the verdict cache is cleared right before the run.
+- `warm`: the cache is cleared, the sequence is sent once unmeasured, and the second pass is measured.
+
+The cache is cleared from the server's Redis (`--redis-url`, default `SERENO_REDIS_URL` or `redis://127.0.0.1:6379/0`, the port compose publishes): `SCAN` finds the verdict entries (keys named by a SHA-256 hex digest) and their `dominio:*` indexes, and only those are deleted. Nothing in PostgreSQL is touched; the administrator invalidation route was not used because it clears one domain at a time and leaves a row per domain in the invalidation list. Verdicts are sent anonymously, like a signed-out extension; `--username` (or `SERENO_USERNAME`) signs in first and sends the session cookie, with the password read only from `SERENO_PASSWORD`.
+
+`CACHE_ENABLED` is on unless it is exactly `0`. With `0` the verdict route neither reads nor writes the cache, every answer comes from the model with `source: "modelo"` (the response is otherwise unchanged and the queries are recorded as model answers), and the start logs a warning; the `/v1/cache` routes still work. Compose passes it to the container (`CACHE_ENABLED: ${CACHE_ENABLED:-1}`). The run without cache is therefore a separate invocation, with the same `--out` folder so the runs are merged:
+
+```powershell
+$env:CACHE_ENABLED = '0'; docker compose --profile server up -d --wait --force-recreate server
+.venv/Scripts/python.exe -m tools.response_time_experiment --urls test_urls.txt --out results/exp2 --modes no-cache
+Remove-Item Env:CACHE_ENABLED; docker compose --profile server up -d --wait --force-recreate server
+.venv/Scripts/python.exe -m tools.response_time_experiment --urls test_urls.txt --out results/exp2 --modes empty,warm
+```
+
+The folder gets `requests.csv` (one row per measured request: level, mode, index, URL, source, verdict, score, client `latencyMs`, the server's `serverLatencyMs`, HTTP status; failed requests have source `error` and are left out of the statistics), `report.json` and `workload.json` (the workload fingerprint: SHA-256 of the URL list, N, seed; another workload in the same folder is refused). Per level and mode the report gives the hit ratio h and the mean, p50 and p95 (linear interpolation) of hits, misses and all requests, and whether the mean meets `--target-ms` (default 200). Per level it gives the reference times Thit (hits of the warm run) and Tmiss (the run without cache), or the hits and misses of every run of the level when those runs are missing; the minimum hit ratio of equation (2), h >= (Tmiss - Tmax) / (Tmiss - Thit), only when Tmiss > Tmax (`no_minimum` otherwise, `unreachable` when Thit > Tmax); for every run the mean predicted by equation (1), T = h·Thit + (1 - h)·Tmiss, against the measured one; and the consistency check, every verdict served from the cache against the verdict of the run without cache for the same URL (verdict and score mismatches, with examples). The environment notes record the server URL, N, seed, the URL file and each invocation with its time stamps. `tests/test_response_time_experiment.py` covers the tool with the HTTP layer and Redis faked, and `tests/test_cache_switch.py` the switch.
+
 ## HTTP contract
 
 | Endpoint | Success | Failure |
