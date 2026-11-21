@@ -20,6 +20,9 @@ def settings():
             "DATABASE_URL": os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL),
             "REDIS_URL": os.environ.get("REDIS_URL", DEFAULT_REDIS_URL),
             "AUTH_LOCAL_HTTP": os.environ.get("AUTH_LOCAL_HTTP") == "1",
+            # The verdict cache: on unless exactly "0" (the response-time
+            # experiment runs without it; see the README).
+            "CACHE_ENABLED": os.environ.get("CACHE_ENABLED", "1") != "0",
             # Unauthenticated developer tools under /dev: off unless asked
             # for, and never to be enabled outside a developer machine.
             "DEV_TOOLS": os.environ.get("DEV_TOOLS") == "1"}

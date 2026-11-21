@@ -55,6 +55,8 @@ def test_the_server_is_configured_through_the_settings_of_the_application():
     assert re.search(r"^      REDIS_URL: redis://redis:6379/0$", text, flags=re.MULTILINE)
     # Neither works nor belongs behind a published port (see the README).
     assert not re.search(r"^\s+(AUTH_LOCAL_HTTP|DEV_TOOLS):", text, flags=re.MULTILINE)
+    # On unless the host asks for the run without cache (response-time experiment).
+    assert re.search(r"^      CACHE_ENABLED: \$\{CACHE_ENABLED:-1\}$", text, flags=re.MULTILINE)
 
 
 def test_the_server_image_is_built_from_this_folder_and_the_model_repository():

@@ -30,14 +30,18 @@ class VerdictService:
     stale answer. A cache that cannot be read or written never fails the
     verdict (RF-20): the classifier answers, the answer says "modelo" and the
     incident is logged; after a failure the cache is skipped for
-    CACHE_PAUSE_SECONDS, then tried again. The policy lookup falls back to the default policy. Every
+    CACHE_PAUSE_SECONDS, then tried again. With cache_enabled=False (the
+    CACHE_ENABLED setting) the cache is never read nor written and every
+    verdict comes from the classifier, which is not an outage and is not
+    logged. The policy lookup falls back to the default policy. Every
     served verdict is recorded in the journal, which backs the signed-in
     user's history and the metrics; that record is a side effect that never
     fails the verdict."""
 
     def __init__(self, cache: CacheService, classifier: Classifier, journal: VerdictJournal,
-                 timer=perf_counter, policies=None):
+                 timer=perf_counter, policies=None, cache_enabled=True):
         self.cache = cache
+        self.cache_enabled = cache_enabled
         self.classifier = classifier
         self.journal = journal
         self.timer = timer
@@ -59,7 +63,9 @@ class VerdictService:
         key = cache_key(parts.normalized)
         started = self.timer()
         cached, outage = None, None
-        if monotonic() < self._cache_paused_until:
+        if not self.cache_enabled:
+            pass  # CACHE_ENABLED=0: the classifier answers every request
+        elif monotonic() < self._cache_paused_until:
             outage = ("paused", f"not retried for {CACHE_PAUSE_SECONDS} s after a failure")
         else:
             try:
@@ -70,7 +76,8 @@ class VerdictService:
             verdict, score, source = cached.verdict, cached.score, "cache"
         else:
             result = self._classify(url)
-            if outage is None:  # no second wait on a cache that just failed
+            # No second wait on a cache that just failed, and no write when disabled.
+            if outage is None and self.cache_enabled:
                 try:
                     self.cache.store(key, domain, result.verdict, result.score)
                 except CacheStorageError as error:

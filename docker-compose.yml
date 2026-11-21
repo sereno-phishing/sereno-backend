@@ -49,6 +49,9 @@ services:
       CLASSIFIER: model
       DATABASE_URL: postgresql://${POSTGRES_USER:-sereno}:${POSTGRES_PASSWORD:-sereno}@postgres:5432/${POSTGRES_DB:-sereno}
       REDIS_URL: redis://redis:6379/0
+      # "0" serves every verdict from the model, without cache (README,
+      # response-time experiment); on otherwise.
+      CACHE_ENABLED: ${CACHE_ENABLED:-1}
     # The only address the browser extension may call.
     ports:
       - "127.0.0.1:5000:5000"

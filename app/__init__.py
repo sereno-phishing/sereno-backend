@@ -68,6 +68,8 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
         raise ValueError("AUTH_LOCAL_HTTP must be a boolean")
     if not isinstance(app.config["DEV_TOOLS"], bool):
         raise ValueError("DEV_TOOLS must be a boolean")
+    if not isinstance(app.config["CACHE_ENABLED"], bool):
+        raise ValueError("CACHE_ENABLED must be a boolean")
     repositories = build_repositories(app.config, clock)
     auth_service = AuthService(repositories.auth, generate_password_hash, check_password_hash)
     survey_service = SurveyService(repositories.survey)
@@ -86,8 +88,12 @@ def create_app(config=None, clock=None, classifier=None, background=start_daemon
         if not app.logger.isEnabledFor(logging.INFO):
             app.logger.setLevel(logging.INFO)
         app.extensions["model_warm_up"] = background(warm_up_task(classifier, app.logger))
+    if not app.config["CACHE_ENABLED"] and not app.config.get("TESTING"):
+        app.logger.warning("CACHE_ENABLED=0: every verdict comes from the model and "
+                           "nothing is cached")
     verdict_service = VerdictService(cache_service, classifier, repositories.journal,
-                                     policies=policy_service)
+                                     policies=policy_service,
+                                     cache_enabled=app.config["CACHE_ENABLED"])
     app.register_blueprint(auth_routes(auth_service))
     app.register_blueprint(policy_routes(auth_service, policy_service))
     app.register_blueprint(survey_routes(auth_service, survey_service))
