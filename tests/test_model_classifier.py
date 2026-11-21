@@ -14,7 +14,7 @@ from app.verdict.classifier import Classification
 from app.verdict.model_classifier import ModelClassifier, ModelUnavailable
 
 
-ARTIFACT = BACKEND_ROOT.parent / "sereno-model" / "artifacts" / "2.0.0" / "model.joblib"
+ARTIFACT = BACKEND_ROOT.parent / "sereno-model" / "artifacts" / "3.0.0" / "model.joblib"
 
 
 class StubModel:
@@ -297,7 +297,7 @@ def test_real_artifact_classifies_a_url_over_http(config):
     assert body["domain"] == "example.org" and body["source"] == "modelo"
     assert body["policy"] == "advertencia"
     assert 0 <= body["score"] <= 1
-    assert body["verdict"] == ("phishing" if body["score"] >= 0.45 else "legitima")
-    assert client.get("/v1/model").get_json() == {"version": "2.0.0"}
+    assert body["verdict"] == ("phishing" if body["score"] >= 0.42 else "legitima")
+    assert client.get("/v1/model").get_json() == {"version": "3.0.0"}
     again = client.post("/v1/verdict", json={"url": "https://www.example.org/pagos?id=1"})
     assert (again.get_json()["source"], again.get_json()["score"]) == ("cache", body["score"])

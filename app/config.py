@@ -5,7 +5,7 @@ from pathlib import Path
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 CLASSIFIERS = ("model", "fake")
 # The artifact trained in the sibling sereno-model repository.
-DEFAULT_MODEL_PATH = "../sereno-model/artifacts/2.0.0/model.joblib"
+DEFAULT_MODEL_PATH = "../sereno-model/artifacts/3.0.0/model.joblib"
 # The services of docker-compose.yml with their development-only defaults.
 DEFAULT_DATABASE_URL = "postgresql://sereno:sereno@127.0.0.1:5432/sereno"
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"

@@ -26,7 +26,7 @@ COPY --from=model pyproject.toml /srv/sereno-model/pyproject.toml
 COPY --from=model src /srv/sereno-model/src
 RUN pip install --no-deps /srv/sereno-model
 
-ARG MODEL_VERSION=2.0.0
+ARG MODEL_VERSION=3.0.0
 COPY --from=model artifacts/${MODEL_VERSION}/model.joblib /srv/sereno-model/artifacts/${MODEL_VERSION}/model.joblib
 
 COPY app ./app
