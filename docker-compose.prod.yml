@@ -1,0 +1,60 @@
+# Production overrides for one small VM behind HTTPS, applied on top of the
+# development file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+#
+# Caddy is the only service reachable from outside (80 and 443); it obtains
+# the TLS certificate for SERENO_DOMAIN and forwards to the server. PostgreSQL,
+# Redis and the server publish no port. The variables come from a Git-ignored
+# .env beside this file (template: .env.production.example); POSTGRES_PASSWORD
+# and SERENO_DOMAIN are required, so no development default is ever used.
+
+services:
+  postgres:
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (URL-safe, e.g. openssl rand -hex 24)}
+    ports: !reset []
+    # Sized for a 1 GiB VM: the server opens at most 8 connections per worker.
+    command: ["postgres", "-c", "shared_buffers=32MB", "-c", "max_connections=25"]
+
+  redis:
+    restart: unless-stopped
+    # Disposable cache: every key has a TTL, so eviction only drops entries
+    # early, the ones closest to expiring first.
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "64mb", "--maxmemory-policy", "volatile-ttl"]
+    ports: !reset []
+
+  server:
+    # Started by a plain "up", without the development profile.
+    profiles: !reset []
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sereno}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sereno}
+      # Development switches, off whatever the environment says: with
+      # AUTH_LOCAL_HTTP off the session cookie is Secure; SameSite=None.
+      AUTH_LOCAL_HTTP: "0"
+      DEV_TOOLS: "0"
+    # Reached only through Caddy on the internal network.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      SERENO_DOMAIN: ${SERENO_DOMAIN:?set SERENO_DOMAIN (e.g. <label>.<region>.cloudapp.azure.com)}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - server
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,11 @@
+# Public entry point of the production stack (docker-compose.prod.yml).
+# Caddy obtains and renews the Let's Encrypt certificate for SERENO_DOMAIN
+# (ports 80 and 443 must be open) and redirects HTTP to HTTPS. With
+# SERENO_DOMAIN=localhost it uses its own local CA instead.
+{$SERENO_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy server:5000
+}
