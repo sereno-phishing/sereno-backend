@@ -69,6 +69,36 @@ Never add `-v` to `down` unless the development database is meant to be deleted.
 - **Health**: the container is healthy once `GET /v1/model` answers, that is, once the model is loaded; it starts only after PostgreSQL and Redis are healthy.
 - **Network**: port 5000 is published on `127.0.0.1` only. `AUTH_LOCAL_HTTP` is not set in the container: behind Docker's port publishing the peer address is the bridge gateway, not loopback, so that mode would answer 403 to every request. The container therefore uses the secure defaults (`Secure`, `SameSite=None` cookie, see "Cookie and browser boundary") and relies on the loopback-only port. `DEV_TOOLS` is not set either: `/dev/users` exists only in the host flow.
 
+## Deploy on a VM (HTTPS)
+
+`docker-compose.prod.yml` turns the three containers into a deployment for one small Linux VM (the target is an Azure Ubuntu x64 VM with 1 GiB of RAM plus swap) behind HTTPS. It is applied on top of `docker-compose.yml`, so the images, the build, the healthchecks and the hardening are the same; it changes only what production needs:
+
+- **Caddy** (`caddy:2.10.2-alpine`, configured by `Caddyfile`) is a fourth container and the only one reachable from outside: it publishes 80/tcp, 443/tcp and 443/udp, obtains and renews a Let's Encrypt certificate for `SERENO_DOMAIN` by itself, redirects HTTP to HTTPS and forwards to `server:5000` on the internal network. Certificates are kept in the named volumes `caddy-data` and `caddy-config`.
+- **No other published port**: PostgreSQL, Redis and the server have none (`ports: !reset []`); the server also leaves the `server` profile, so a plain `up` starts it. Administration goes through `docker compose exec`.
+- **Required settings**: `POSTGRES_PASSWORD` and `SERENO_DOMAIN` have no default; without either, every compose command fails with a message instead of falling back to the development credentials.
+- **Development switches off**: the server runs with `AUTH_LOCAL_HTTP=0` and `DEV_TOOLS=0` whatever the environment says, so the session cookie is `Secure`, `HttpOnly`, `SameSite=None` (what the extension needs over HTTPS) and `/dev` does not exist. Nothing in the application reads the request scheme or host outside those two switches, so no proxy-header handling is added.
+- **Small machine**: PostgreSQL runs with `shared_buffers=32MB` and `max_connections=25`, Redis with `maxmemory 64mb` and `volatile-ttl` (every cache key has a TTL, so eviction only drops cache entries early). Every service restarts with the Docker daemon (`restart: unless-stopped`). The server is the same: `CLASSIFIER=model`, artifact `3.0.0`, one gunicorn worker.
+
+On the VM (Docker Engine with the compose plugin), with both repositories cloned side by side, as on the development machine:
+
+1. **Model artifact.** `artifacts/3.0.0/model.joblib` is Git-ignored in `sereno-model`, and the image build copies it from the named build context `model: ../sereno-model`. Copy it from the development machine into the same place, for example `scp ../sereno-model/artifacts/3.0.0/model.joblib <user>@<host>:sereno-model/artifacts/3.0.0/` (create the folder first). Without it the build fails.
+2. **Settings.** `cp deploy/production.env.example .env` in `sereno-backend/` and fill it in: `SERENO_DOMAIN` (the public hostname, the Azure DNS label of the VM's IP, `<label>.<region>.cloudapp.azure.com`) and `POSTGRES_PASSWORD` (it goes into the database URL, so use a URL-safe value such as `openssl rand -hex 24`; it is applied only when the database volume is first created). `POSTGRES_USER`, `POSTGRES_DB` (both `sereno`) and `CACHE_ENABLED` are optional. The file also sets `COMPOSE_FILE`, so every later `docker compose` command in that folder (`ps`, `logs`, `exec`, `down`) uses both files. `.env` is Git-ignored; never commit it.
+3. **Firewall.** Open inbound 80/tcp (certificate challenge and redirect) and 443/tcp plus 443/udp (HTTPS, HTTP/3) in the network security group, and nothing else besides SSH, preferably limited to your own address. The DNS name must already point at the VM before the first start, or the certificate cannot be issued.
+4. **Start.**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+docker compose ps                    # postgres, redis, server healthy; caddy running
+docker compose logs server caddy     # "Model 3.0.0 loaded in N s"; the certificate obtained
+curl https://<label>.<region>.cloudapp.azure.com/v1/model   # {"version":"3.0.0"}
+```
+
+The build installs the model libraries with pip, which needs the swap on a 1 GiB machine and takes a while. Never add `-v` to `down`: it deletes the database and the certificates.
+
+**Administrator accounts.** There is no production path to create one: no endpoint, no command and no seeded account, and public registration always creates a `user`. Register the account through the extension (or `POST /v1/auth/register`), then promote it on the VM with `docker compose exec postgres psql -U sereno -d sereno -c "UPDATE usuario SET rol = 'admin' WHERE nombre = 'alice';"`, as in local development (no restart needed).
+
+The browser extension still calls `http://127.0.0.1:5000`; it must be pointed at the HTTPS address separately.
+
 ## Response-time experiment
 
 `tools/response_time_experiment.py` runs experiment 2 of the paper against a running server: the end-to-end time of `POST /v1/verdict` measured at the client with `time.perf_counter`, from sending the request to having the parsed verdict, as the extension's HTTP call sees it. The URL file has one test-set URL per line (blank lines, `#` comments and repeated URLs are dropped). For each repetition level r (`--levels`, default `0,25,50,75` percent) the tool builds a sequence of `--requests` requests (default 1000) with `--seed` (default 20261111): `round(N*r)` requests (half up) repeat a URL already sent, the others are distinct URLs sampled without replacement; each repetition repeats one of them chosen at random and goes in a random slot after that URL's first occurrence. Each sequence runs in three modes:
