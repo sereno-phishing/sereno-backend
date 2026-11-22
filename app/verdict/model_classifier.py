@@ -8,7 +8,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from threading import Lock
 
-from .classifier import LEGITIMATE, PHISHING, Classification
+from .classifier import LEGITIMATE, PHISHING, Classification, ClassifierUnavailable
 
 
 INSTALL_HINT = ("From sereno-backend/, run '.venv/Scripts/python.exe -m pip install -r "
@@ -18,7 +18,7 @@ INSTALL_HINT = ("From sereno-backend/, run '.venv/Scripts/python.exe -m pip inst
 REQUIRED_MODULES = ("joblib", "sklearn", "xgboost", "lightgbm", "pandas", "pyarrow", "tldextract")
 
 
-class ModelUnavailable(RuntimeError):
+class ModelUnavailable(ClassifierUnavailable):
     """The model artifact or the libraries it needs cannot be used."""
 
 

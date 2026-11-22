@@ -142,6 +142,55 @@ def test_normalize_applies_rfc_3986_equivalences_and_keeps_distinct_urls_apart()
     assert cache_key("https://shop.pe/a") == sha256(b"https://shop.pe/a").hexdigest()
 
 
+# The design's conservative normalization (ADD, RNF-05): what is one URL for the cache.
+@pytest.mark.parametrize("url, equivalent", [
+    ("HTTPS://SHOP.PE/Pay", "https://shop.pe/Pay"),  # scheme and host lower-cased, path kept
+    ("http://shop.pe:80/a", "http://shop.pe/a"),  # default http port dropped
+    ("https://shop.pe:443/a", "https://shop.pe/a"),  # default https port dropped
+    ("https://shop.pe/a#section", "https://shop.pe/a"),  # fragment dropped
+    ("https://shop.pe/%7Euser/%41-%5F", "https://shop.pe/~user/A-_"),  # unreserved decoded
+    ("https://shop.pe/a?q=%2E%30", "https://shop.pe/a?q=.0"),  # in the query too
+])
+def test_equivalent_urls_share_one_hash(url, equivalent):
+    assert normalize(url) == normalize(equivalent)
+    assert cache_key(normalize(url)) == cache_key(normalize(equivalent))
+
+
+@pytest.mark.parametrize("url, other", [
+    ("http://shop.pe/a", "https://shop.pe/a"),  # scheme
+    ("https://www.shop.pe/a", "https://shop.pe/a"),  # "www."
+    ("https://shop.pe/a/", "https://shop.pe/a"),  # trailing slash
+    ("https://shop.pe/", "https://shop.pe"),  # trailing slash of the bare site
+    ("https://shop.pe/a?x=1&y=2", "https://shop.pe/a?y=2&x=1"),  # query parameter order
+    ("https://shop.pe:8443/a", "https://shop.pe/a"),  # a non-default port
+    ("https://shop.pe/a%2Fb", "https://shop.pe/a/b"),  # a reserved encoding is not decoded
+])
+def test_urls_the_design_keeps_apart_get_different_hashes(url, other):
+    assert cache_key(normalize(url)) != cache_key(normalize(other))
+
+
+def test_the_cache_key_is_a_hex_sha256_that_does_not_contain_the_url():
+    url = "https://shop.pe/pay?order=42"
+    key = cache_key(normalize(url))
+    assert len(key) == 64 and set(key) <= set("0123456789abcdef")
+    assert "shop.pe" not in key
+
+
+@pytest.mark.parametrize("url, other", [
+    ("http://shop.pe/a", "https://shop.pe/a"),
+    ("https://www.shop.pe/a", "https://shop.pe/a"),
+    ("https://shop.pe/a/", "https://shop.pe/a"),
+    ("https://shop.pe/a?x=1&y=2", "https://shop.pe/a?y=2&x=1"),
+])
+def test_distinct_urls_of_one_domain_are_cached_apart(make_service, url, other):
+    classifier = SpyClassifier()
+    service, _ = make_service(classifier)
+    assert service.evaluate(url, None)["source"] == "modelo"
+    assert service.evaluate(other, None)["source"] == "modelo"
+    assert service.evaluate(url, None)["source"] == "cache"
+    assert classifier.calls == [url, other]
+
+
 def test_miss_uses_model_then_equivalent_url_hits_cache(make_service):
     classifier = SpyClassifier()
     service, _ = make_service(classifier)
@@ -304,6 +353,47 @@ def test_after_a_failure_the_cache_is_left_alone_for_a_while_then_tried_again(
     assert service.evaluate(OUTAGE_URL, None)["source"] == "modelo"
     assert broken.calls == ["lookup", "lookup", "store"]
     assert service.evaluate(OUTAGE_URL, None)["source"] == "cache"
+
+
+SECRET_URL = "https://www.Shop.pe/reset?token=s3cr3t#frag"
+
+
+def classifier_logs(caplog):
+    return [record.getMessage() for record in caplog.records
+            if record.name == "app.verdict.service" and "Classifier failed" in record.getMessage()]
+
+
+def test_a_classifier_error_quoting_the_url_never_puts_it_in_the_log(make_service, caplog):
+    # The model re-parses the URL and its errors quote it (InvalidUrlError embeds repr(url)).
+    service, _ = make_service(SpyClassifier(ValueError(f"cannot score {SECRET_URL!r}")))
+    with caplog.at_level("INFO"), pytest.raises(ClassifierError):
+        service.evaluate(SECRET_URL, None)
+    [message] = classifier_logs(caplog)
+    assert "ValueError" in message and "shop.pe" in message
+    assert cache_key(normalize(SECRET_URL)) in message
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    for fragment in ("reset", "token", "s3cr3t", "https://", "www.", "Shop.pe"):
+        assert fragment not in logged
+
+
+def test_an_unavailable_classifier_logs_its_own_message(make_service, caplog):
+    from app.verdict.classifier import ClassifierUnavailable
+
+    error = ClassifierUnavailable("Model artifact not found at 'model.joblib'.")
+    service, _ = make_service(SpyClassifier(error))
+    with caplog.at_level("INFO"), pytest.raises(ClassifierError):
+        service.evaluate(SECRET_URL, None)
+    [message] = classifier_logs(caplog)
+    assert "Model artifact not found at 'model.joblib'." in message
+    assert "s3cr3t" not in message
+
+
+def test_model_unavailable_is_a_classifier_unavailable():
+    from app.verdict.classifier import ClassifierUnavailable
+    from app.verdict.model_classifier import ModelUnavailable
+
+    assert issubclass(ModelUnavailable, ClassifierUnavailable)
+    assert issubclass(ModelUnavailable, RuntimeError)
 
 
 def test_a_classifier_failure_during_a_cache_outage_is_still_a_classifier_error(make_service):

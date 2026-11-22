@@ -4,7 +4,7 @@ from time import monotonic, perf_counter
 from ..cache.domain import CacheStorageError
 from ..cache.service import CacheService
 from ..policy.domain import DEFAULT_POLICY
-from .classifier import VERDICTS, Classification, Classifier
+from .classifier import VERDICTS, Classification, Classifier, ClassifierUnavailable
 from .journal import ServedVerdict, VerdictJournal
 from .url import InvalidUrl, cache_key, parse, site_domain
 
@@ -75,7 +75,7 @@ class VerdictService:
         if cached is not None:
             verdict, score, source = cached.verdict, cached.score, "cache"
         else:
-            result = self._classify(url)
+            result = self._classify(url, domain, key)
             # No second wait on a cache that just failed, and no write when disabled.
             if outage is None and self.cache_enabled:
                 try:
@@ -106,11 +106,15 @@ class VerdictService:
         except Exception:
             logger.warning("Query not recorded", exc_info=True)
 
-    def _classify(self, url):
+    def _classify(self, url, domain, key):
         try:
             result = self.classifier.classify(url)
         except Exception as error:
-            logger.error("Classifier failed: %s", error)
+            # An arbitrary error may quote its input (the model's URL parser
+            # does), so only an adapter-written message is logged (RNF-05).
+            detail = (f": {error}" if isinstance(error, ClassifierUnavailable)
+                      else f" ({type(error).__name__})")
+            logger.error("Classifier failed (domain=%s, urlHash=%s)%s", domain, key, detail)
             raise ClassifierError from error
         if (not isinstance(result, Classification) or result.verdict not in VERDICTS
                 or type(result.score) not in (int, float) or not 0 <= result.score <= 1):

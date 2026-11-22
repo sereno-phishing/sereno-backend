@@ -17,6 +17,12 @@ class Classification:
     score: float  # phishing probability, 0..1
 
 
+class ClassifierUnavailable(RuntimeError):
+    """The classifier cannot answer at all (model or libraries missing). Its
+    message is written by the adapter and never quotes the URL, so it is the
+    one classifier error whose text the verdict service logs (RNF-05)."""
+
+
 class Classifier(Protocol):
     version: str
 
