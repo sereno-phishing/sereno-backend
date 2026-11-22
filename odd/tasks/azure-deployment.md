@@ -26,8 +26,8 @@ Make the three-container stack (PostgreSQL, Redis, evaluation server) deployable
 English technical artifacts. Conventional commits, no AI attribution. `docker-compose.yml` and its development behaviour unchanged. No remote operations.
 
 ## Work units
-- [x] D1 Production compose override, Caddyfile, `deploy/production.env.example` (route: delegated writer, this worker).
-- [x] D2 README deployment section.
+- [x] D1 Production compose override, Caddyfile, `deploy/production.env.example` (route: delegated writer, this worker). Commit `8c98b3f`.
+- [x] D2 README deployment section. Commit `ccda567`.
 - [x] D3 Checks: rendered config with dummy values, failure without `POSTGRES_PASSWORD` and without `SERENO_DOMAIN`. Full test suite and live stack: pending (Docker daemon not running).
 
 ## Checks
