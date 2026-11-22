@@ -36,7 +36,7 @@ English technical artifacts. Conventional commits, no AI attribution. No push, n
 ## Progress and evidence
 Branch `feat/url-hash` from `6e12ee8` (`feat/azure-deployment`).
 
-- RED (`tests/test_verdict.py`): 3 failed, 65 passed. The leak was observed in the captured log: `Classifier failed: cannot score 'https://www.Shop.pe/reset?token=s3cr3t#frag'`; the other two failures were the missing `ClassifierUnavailable`. The 17 new normalisation and hash cases passed at once: they pin behaviour that already existed.
+- RED (`tests/test_verdict.py`): 3 failed, 65 passed. The leak was observed in the captured log: `Classifier failed: cannot score 'https://www.Shop.pe/reset?token=s3cr3t#frag'`; the other two failures were the missing `ClassifierUnavailable`. The 18 new normalisation and hash cases passed at once: they pin behaviour that already existed.
 - GREEN: `tests/test_verdict.py` and `tests/test_model_classifier.py` 91 passed.
 - Full suite: `.venv/Scripts/python.exe -m pytest -q` -> 469 passed (448 on the base plus 21 new), nothing skipped.
 
